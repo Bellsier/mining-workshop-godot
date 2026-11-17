@@ -48,7 +48,7 @@ func _restore(source: Dictionary) -> void:
 	state.merge(source, true)
 	var legacy: Dictionary = source.get("legacy_web_save", {})
 	var legacy_run := _dictionary(legacy.get("run"))
-	state.village = Village.load_progress(source.get("village", legacy_run.get("village")))
+	state["village"] = Village.load_progress(source.get("village", legacy_run.get("village")))
 	if not legacy.is_empty() and not source.has("characters"):
 		var run := legacy_run
 		var permanent := _dictionary(legacy.get("permanent"))
