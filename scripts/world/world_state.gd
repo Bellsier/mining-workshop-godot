@@ -52,6 +52,12 @@ static func set_current(state: RefCounted) -> void:
 			Engine.remove_meta(META_KEY)
 	else:
 		Engine.set_meta(META_KEY, state)
+		var tree := Engine.get_main_loop() as SceneTree
+		if tree != null and tree.root.get_node_or_null("WorldSessionCleanup") == null:
+			var keeper := Node.new()
+			keeper.name = "WorldSessionCleanup"
+			keeper.set_script(load("res://scripts/world/world_session_cleanup.gd"))
+			tree.root.add_child.call_deferred(keeper)
 
 ## The shared world, created on first use. `seed_value` < 0 picks a random seed.
 static func ensure_current(seed_value: int = -1) -> RefCounted:
