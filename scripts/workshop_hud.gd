@@ -313,6 +313,7 @@ func _refresh(force := false) -> void:
 		TAB_RESEARCH:
 			_render_research(state.get("research", []), state.get("completed_research", {}), inventory, gold)
 			_render_sites(state.get("sites", []), inventory, gold)
+			_render_upgrades(state.get("upgrades", []), inventory, gold)
 		TAB_DELIVERY: _render_deliveries(state.get("deliveries", state.get("delivery_offers", [])), int(state.get("reputation", 0)))
 		TAB_SAVE: _render_save()
 	if _rows.get_child_count() == 0:
@@ -342,7 +343,7 @@ func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: 
 				remaining.append(ceili(float(recipe.get("remaining", 0))))
 			return JSON.stringify([visible_quantities, automation, completed, remaining])
 		TAB_SELL: return JSON.stringify([visible_quantities, automation, gold])
-		TAB_RESEARCH: return JSON.stringify([visible_quantities, completed, state.get("sites", []), gold])
+		TAB_RESEARCH: return JSON.stringify([visible_quantities, completed, state.get("sites", []), state.get("upgrades", []), gold])
 	return str(_active_tab)
 
 func _render_inventory(inventory: Dictionary) -> void:
@@ -490,6 +491,21 @@ func _render_deliveries(deliveries: Array, reputation: int) -> void:
 		]
 		var company := str(delivery.get("company_name", delivery.get("company_id", "납품")))
 		_add_row(company, description, "납품", "deliver", id, bool(delivery.get("can_complete", false)))
+
+func _render_upgrades(upgrades: Array, inventory: Dictionary, gold: int) -> void:
+	if upgrades.is_empty():
+		return
+	_rows.add_child(_label("시설과 인력 강화", 12))
+	for upgrade: Dictionary in upgrades:
+		var title := "%s Lv.%d" % [upgrade.name, int(upgrade.level)]
+		if int(upgrade.level) >= int(upgrade.limit):
+			_add_row(title, "최대 레벨")
+			continue
+		var cost: Dictionary = upgrade.cost
+		var money := int(cost.get("gold", 0))
+		var needs: Dictionary = cost.get("products", {})
+		var details := "%d G" % money if needs.is_empty() else _describe_items(needs)
+		_add_row(title, details, "강화", "upgrade", upgrade.id, gold >= money and _has_items(inventory, needs))
 
 func _render_save() -> void:
 	if not _workshop.has_method("import_save"):

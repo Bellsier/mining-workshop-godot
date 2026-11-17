@@ -50,6 +50,12 @@ func _run() -> void:
 		var offer: Dictionary = offers[0]
 		game.state.inventory[offer.product] = float(offer.qty) + 1.0
 		_expect(game.deliver(offer.id), "deliver first contract")
+	game.state.inventory.iron = 30.0
+	game.state.gold = 10000.0
+	_expect(game.upgrade("hq_level") and game.state.hq_level == 1, "headquarters upgrade")
+	_expect(game.upgrade("facility:iron") and game.state.facility.iron == 1, "mining upgrade")
+	_expect(not game.upgrade("facility:plasma"), "locked resource upgrade")
+	_expect(game.upgrade("craft_facility") and game.state.craft_facility == 2, "craft facility upgrade")
 	var saved := game.export_save()
 	_expect(not saved.is_empty(), "export save")
 	_expect(game.import_save(saved) and game.state.characters.size() == 1, "save roundtrip")

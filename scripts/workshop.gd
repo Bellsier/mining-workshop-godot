@@ -99,8 +99,8 @@ func snapshot() -> Dictionary:
 			{"id": "gold", "name": "인부 뽑기 (골드)", "cost": data.balance.gacha.PULL_COST_GOLD}],
 		"owned_workers": assigned, "worker_details": workers, "tickets": state.tickets, "research": research,
 		"completed_research": state.completed_research, "stats": state.stats, "automation": state.automation,
-		"sites": sites, "deliveries": Delivery.offers(data, state),
-		"reputation": state.get("delivery", {}).get("reputation", 0), "save_error": _save_error}
+		"sites": sites, "upgrades": _upgrade_options(), "deliveries": Delivery.offers(data, state),
+		"reputation": Delivery.reputation(data, state), "save_error": _save_error}
 
 func is_resource_open(id: String) -> bool:
 	var resource: Dictionary = _tables.resources.get(id, {})
@@ -202,6 +202,54 @@ func open_site(id: String) -> bool:
 		return _reject("채굴 지대 해금 비용이 부족해요.")
 	state.unlocked_sites[id] = true
 	return _updated("채굴 지대 해금 · " + row.name)
+
+func upgrade(id: String) -> bool:
+	var option := _upgrade_option(id)
+	if option.is_empty() or option.level >= option.limit:
+		return false
+	if not _pay(option.cost):
+		return _reject("강화 비용이 부족해요.")
+	var field: String = option.field
+	var resource: String = option.get("resource", "")
+	if resource.is_empty():
+		state[field] += 1
+	else:
+		state[field][resource] = int(state[field].get(resource, 0)) + 1
+	return _updated("%s Lv.%d" % [option.name, int(option.level) + 1])
+
+func _upgrade_options() -> Array:
+	var options := [_upgrade_option("hq_level"), _upgrade_option("craft_facility")]
+	for resource: Dictionary in data.resources:
+		if is_resource_open(resource.key):
+			options.append(_upgrade_option("facility:" + str(resource.key)))
+			options.append(_upgrade_option("workforce:" + str(resource.key)))
+	return options
+
+func _upgrade_option(id: String) -> Dictionary:
+	if id == "hq_level":
+		var rules: Dictionary = data.balance.hq
+		var level := int(state.hq_level)
+		return {"id": id, "field": id, "name": "본사 투자", "level": level, "limit": int(rules.MAX_LEVEL),
+			"cost": {"gold": _level_cost(rules.COST_BASE, rules.COST_GROWTH, level)}}
+	if id == "craft_facility":
+		var rules: Dictionary = data.balance.crafting
+		var level := int(state.craft_facility)
+		return {"id": id, "field": id, "name": "제작 시설 강화", "level": level, "limit": int(rules.FACILITY_MAX_LEVEL),
+			"cost": {"gold": _level_cost(rules.FACILITY_COST_BASE, rules.FACILITY_COST_GROWTH, level - 1)}}
+	var parts := id.split(":", false, 1)
+	if parts.size() != 2 or parts[0] not in ["facility", "workforce"] or not is_resource_open(parts[1]):
+		return {}
+	var field := parts[0]
+	var resource := parts[1]
+	var prefix := field.to_upper()
+	var level := int(state[field].get(resource, 0))
+	var rules: Dictionary = data.balance.mining
+	var name := _label(resource) + (" 도구 강화" if field == "facility" else " 인력 강화")
+	return {"id": id, "field": field, "resource": resource, "name": name, "level": level, "limit": int(rules[prefix + "_MAX_LEVEL"]),
+		"cost": {"products": {resource: _level_cost(rules[prefix + "_COST_BASE"], rules[prefix + "_COST_GROWTH"], level)}}}
+
+func _level_cost(base: float, growth: float, level: int) -> int:
+	return roundi(base * pow(growth, maxi(0, level)))
 
 func set_auto_craft(id: String, enabled: bool) -> bool:
 	if not _tables.recipes.has(id) or not state.completed_research.get("autoCraftDevice", false):

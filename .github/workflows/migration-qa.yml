@@ -38,3 +38,20 @@ jobs:
           godot --headless --path . --fixed-fps 60 -- --route-test 2>&1 | tee "$RUNNER_TEMP/route.log"
           grep -F 'ROUTE PASS' "$RUNNER_TEMP/route.log"
           ! grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$RUNNER_TEMP/"{gameplay,save,route}.log
+      - name: Build private Web preview
+        shell: bash
+        run: |
+          release=https://github.com/godotengine/godot-builds/releases/download/4.4.1-stable
+          templates="$HOME/.local/share/godot/export_templates/4.4.1.stable"
+          mkdir -p "$templates" "$RUNNER_TEMP/web"
+          curl --fail --show-error --silent --location --retry 2 --output "$RUNNER_TEMP/templates.tpz" "$release/Godot_v4.4.1-stable_export_templates.tpz"
+          unzip -p "$RUNNER_TEMP/templates.tpz" templates/web_release.zip > "$templates/web_release.zip"
+          godot --headless --path . --export-release Web "$RUNNER_TEMP/web/index.html"
+          test -s "$RUNNER_TEMP/web/index.wasm"
+          test -s "$RUNNER_TEMP/web/index.pck"
+      - name: Keep Web preview with this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: mining-workshop-godot-web
+          path: ${{ runner.temp }}/web
+          retention-days: 7
