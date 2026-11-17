@@ -1,0 +1,38 @@
+# 채굴 공방 · Godot 이전 1단계 (PC 시험판)
+
+공방 앞에서 출발해 키보드로 서쪽 산맥까지 걸어가 터널에 들어갔다 나오는 짧은 구간입니다. 기존 웹판과는 별개 프로젝트입니다.
+
+- 엔진: **Godot 4.4.1 표준판(.NET 아님)**, 렌더러 **Compatibility**
+- 조작: **WASD 또는 방향키** (휴대폰용 가상 스틱도 들어 있지만 이번 범위는 PC)
+- 임시 도트(`art/`), 한글 글꼴 Galmuri9 (OFL-1.1, `fonts/Galmuri-OFL-LICENSE.txt`)
+
+## 열기와 실행
+1. Godot 4.4.1 표준판(Windows)을 받아 실행 → **가져오기** → 이 폴더의 `project.godot` → **가져오기 및 편집**
+2. **F5**: 공방 앞(`scenes/overworld.tscn`)에서 시작합니다.
+
+## 산맥 타일 바꾸기
+1. `scenes/overworld.tscn`을 열고 씬 패널에서 **`Mountains`** 를 고릅니다(아래에 TileMap 패널이 열림).
+2. **타일** 탭에서 타일을 골라 칠합니다.
+   - 칠하기 **D**, 직사각형 **R**, 지우기 오른쪽 클릭
+   - 3번째 바위와 4번째 눈 능선은 막히는 타일(충돌 포함)이고, 5번째는 터널 입구 그림입니다.
+3. 풀과 길은 **`Ground`** 레이어에 칠합니다.
+4. 카메라 범위는 칠한 타일에 맞춰 자동으로 바뀝니다.
+
+## 터널 입구 옮기기
+아래 세 가지를 함께 옮깁니다.
+1. `Mountains`에 새 자리에 입구 타일(5번째)을 칠하고, 옛 자리는 바위로 메웁니다.
+2. **`TunnelEntrance`** 를 이동 도구(**W**)로 새 입구 위로 끕니다. 들어가는 영역 크기는 자식 `Shape`의 Size에서 바꿉니다.
+3. **`Spawns/FromTunnel`** 을 새 입구 바로 바깥으로 옮깁니다. 입구 영역과 겹치면 나오자마자 다시 들어가므로 1~2칸 띄웁니다.
+
+들어간 뒤 열릴 장면과 설 위치는 `TunnelEntrance` 인스펙터의 Target Scene과 Target Spawn으로 정합니다. 터널 쪽 출구는 `scenes/tunnel.tscn`의 `Exit`, `Spawns/FromOutside`입니다.
+
+## 윈도우 실행판 만들기
+1. **편집기 → 내보내기 템플릿 관리 → 다운로드 및 설치** (4.4.1, 한 번만)
+2. **프로젝트 → 내보내기 → Windows Desktop → 프로젝트 내보내기**
+   - 결과: `build/windows/MiningWorkshopTrial.exe` (게임 데이터 포함 파일 하나)
+
+## 자동 확인
+- 실행판이나 편집기 실행에 `-- --route-test`를 붙이면 공방 → 터널 → 밖을 자동으로 걷습니다.
+  - 결과는 `route-test-result.txt`에 적힙니다. 마지막 줄이 `ROUTE PASS`면 통과입니다.
+- `-- --trace-position`은 현재 위치를 `position-trace.txt`에 적습니다(검사용).
+- `tools/build_scenes.gd`는 처음 장면을 만든 스크립트입니다. 다시 실행하면 편집기에서 고친 장면을 덮어씁니다.
