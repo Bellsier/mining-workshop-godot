@@ -1,0 +1,52 @@
+name: World migration QA
+
+on:
+  push:
+    branches: ['claude/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  world:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get Godot 4.4.1
+        shell: bash
+        run: |
+          release=https://github.com/godotengine/godot-builds/releases/download/4.4.1-stable
+          archive=Godot_v4.4.1-stable_linux.x86_64.zip
+          curl --fail --show-error --silent --location --retry 2 --output "$RUNNER_TEMP/$archive" "$release/$archive"
+          unzip -q "$RUNNER_TEMP/$archive" -d "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP/${archive%.zip}" "$RUNNER_TEMP/godot"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Import assets and check scripts
+        shell: bash
+        run: |
+          godot --headless --path . --editor --import 2>&1 | tee "$RUNNER_TEMP/import.log"
+          ! grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$RUNNER_TEMP/import.log"
+      - name: World logic matches the web original
+        shell: bash
+        run: |
+          godot --headless --path . --script res://tools/world_logic_test.gd 2>&1 | tee "$RUNNER_TEMP/world-logic.log"
+          grep -F 'WORLD LOGIC PASS' "$RUNNER_TEMP/world-logic.log"
+      - name: Stage 1 workshop-tunnel route still passes
+        shell: bash
+        run: |
+          godot --headless --path . --fixed-fps 60 -- --route-test 2>&1 | tee "$RUNNER_TEMP/route.log"
+          grep -F 'ROUTE PASS' "$RUNNER_TEMP/route.log"
+      - name: World exploration route
+        shell: bash
+        run: |
+          if [ -f tools/world_route_test.gd ]; then
+            godot --headless --path . --fixed-fps 60 --script res://tools/world_route_test.gd 2>&1 | tee "$RUNNER_TEMP/world-route.log"
+            grep -F 'WORLD ROUTE PASS' "$RUNNER_TEMP/world-route.log"
+          fi
+      - name: No script errors in the runs
+        if: always()
+        shell: bash
+        run: |
+          ! cat "$RUNNER_TEMP"/*.log 2>/dev/null | grep -E 'SCRIPT ERROR:|Parse Error:'
