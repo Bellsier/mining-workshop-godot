@@ -5,6 +5,7 @@ signal feedback(message: String)
 
 const Save = preload("res://scripts/workshop_save.gd")
 const Delivery = preload("res://scripts/workshop_delivery.gd")
+const Village = preload("res://scripts/workshop_village.gd")
 const CATALOG := "res://data/web_catalog.json"
 const TICK := 0.1
 
@@ -46,8 +47,10 @@ func _restore(source: Dictionary) -> void:
 	}
 	state.merge(source, true)
 	var legacy: Dictionary = source.get("legacy_web_save", {})
+	var legacy_run := _dictionary(legacy.get("run"))
+	state.village = Village.load_progress(source.get("village", legacy_run.get("village")))
 	if not legacy.is_empty() and not source.has("characters"):
-		var run := _dictionary(legacy.get("run"))
+		var run := legacy_run
 		var permanent := _dictionary(legacy.get("permanent"))
 		var records: Variant = run.get("characters", [])
 		if records is Array:
@@ -90,7 +93,7 @@ func snapshot() -> Dictionary:
 			"count": row.out, "sell": row.sell, "time": row.craftTime, "remaining": state.queue.get(row.key, 0),
 			"workshop_only": row.get("workshopOnly", false), "auto_sell_cost": _auto_sell_cost(row)})
 	for row: Dictionary in data.research:
-		research.append({"id": row.key, "name": row.name, "cost": row.cost, "requires": row.requires, "description": row.desc})
+		research.append({"id": row.key, "name": row.name, "cost": _research_cost(row), "requires": row.requires, "description": row.desc})
 	for row: Dictionary in data.sites:
 		sites.append({"id": row.key, "name": row.name, "cost": {"gold": row.unlockCost, "products": row.unlockProducts},
 			"unlocked": state.unlocked_sites.get(row.key, false)})
@@ -100,7 +103,7 @@ func snapshot() -> Dictionary:
 		"owned_workers": assigned, "worker_details": workers, "tickets": state.tickets, "research": research,
 		"completed_research": state.completed_research, "stats": state.stats, "automation": state.automation,
 		"sites": sites, "upgrades": _upgrade_options(), "deliveries": Delivery.offers(data, state),
-		"reputation": Delivery.reputation(data, state), "save_error": _save_error}
+		"reputation": Delivery.reputation(data, state), "village": Village.snapshot(data, state.village), "save_error": _save_error}
 
 func is_resource_open(id: String) -> bool:
 	var resource: Dictionary = _tables.resources.get(id, {})
@@ -111,7 +114,8 @@ func mine(id: String) -> bool:
 		return _reject("먼저 채굴 지대를 해금하세요.")
 	var amount := (float(_tables.resources[id].base) + float(state.facility.get(id, 0))) * _multiplier()
 	_add(id, amount)
-	return _updated("%s +%s" % [_label(id), _quantity(amount)])
+	var relic_found := Village.mine(data, state.village, id)
+	return _updated("%s +%s%s" % [_label(id), _quantity(amount), " · 미감정 유물 발견" if relic_found else ""])
 
 func craft(id: String) -> bool:
 	if not _start_craft(id):
@@ -189,10 +193,52 @@ func unlock(id: String) -> bool:
 	for required: String in row.requires:
 		if not state.completed_research.get(required, false):
 			return _reject("선행 연구가 필요해요.")
-	if not _pay(row.cost):
+	if not _pay(_research_cost(row)):
 		return _reject("연구 비용이 부족해요.")
 	state.completed_research[id] = true
 	return _updated("연구 완료 · " + row.name)
+
+func _research_cost(row: Dictionary) -> Dictionary:
+	var cost: Dictionary = row.cost.duplicate()
+	var discount := Village.research_discount(data, state.village)
+	cost.gold = ceili(float(cost.get("gold", 0)) * (100 - discount) / 100.0)
+	return cost
+
+func restore_facility(id: String) -> bool:
+	var step := Village.next_stage(data, state.village, id)
+	if step.is_empty():
+		return _reject("선행 복구가 필요하거나 이미 운영 중이에요.")
+	if not _pay(step.cost):
+		return _reject("시설 복구 비용이 부족해요.")
+	state.village.stage[id] = int(state.village.stage.get(id, 0)) + 1
+	return _updated("%s · %s 완료" % [data.village.FACILITIES[id].name, step.name])
+
+func appraise_relic(_id: String) -> bool:
+	var relic := Village.appraise(data, state.village)
+	if relic.is_empty():
+		return _reject("감정소 복구 상태와 유물 수를 확인하세요.")
+	return _updated("유물 감정 · " + relic.name)
+
+func donate_relic(id: String) -> bool:
+	var village: Dictionary = state.village
+	if not Village.is_open(data, village, "museum") or id in village.donated or int(village.owned.get(id, 0)) <= 0:
+		return _reject("기증할 새 유물이 없어요.")
+	for relic: Dictionary in data.village_relics:
+		if relic.key == id:
+			village.owned[id] -= 1
+			village.donated.append(id)
+			return _updated("박물관 기증 · " + relic.name)
+	return false
+
+func donate_specimen(id: String) -> bool:
+	var village: Dictionary = state.village
+	if not Village.is_open(data, village, "museum") or id in Village.specimen_keys(village):
+		return false
+	for specimen: Dictionary in data.village_specimens:
+		if specimen.key == id and _pay({"products": {id: specimen.qty}}):
+			village.specimens.append({"key": id, "at": int(Time.get_unix_time_from_system() * 1000)})
+			return _updated("박물관 기증 · " + _label(id))
+	return _reject("기증할 표본 수가 부족해요.")
 
 func open_site(id: String) -> bool:
 	var row: Dictionary = _tables.sites.get(id, {})

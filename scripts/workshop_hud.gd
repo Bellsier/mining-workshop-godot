@@ -1,9 +1,9 @@
 extends CanvasLayer
 ## Inventory is available anywhere. The world controller opens the full menu at the workshop.
 
-enum { TAB_INVENTORY, TAB_CRAFT, TAB_SELL, TAB_WORKERS, TAB_RESEARCH, TAB_DELIVERY, TAB_SAVE }
+enum { TAB_INVENTORY, TAB_CRAFT, TAB_SELL, TAB_WORKERS, TAB_RESEARCH, TAB_DELIVERY, TAB_VILLAGE, TAB_SAVE }
 
-const TABS := ["가방", "제작", "판매", "인부", "연구", "납품", "저장"]
+const TABS := ["가방", "제작", "판매", "인부", "연구", "납품", "마을", "저장"]
 const PAPER := Color("f5e5ce")
 const MUTED := Color("d3bda0")
 
@@ -315,6 +315,7 @@ func _refresh(force := false) -> void:
 			_render_sites(state.get("sites", []), inventory, gold)
 			_render_upgrades(state.get("upgrades", []), inventory, gold)
 		TAB_DELIVERY: _render_deliveries(state.get("deliveries", state.get("delivery_offers", [])), int(state.get("reputation", 0)))
+		TAB_VILLAGE: _render_village(state.get("village", {}), inventory, gold)
 		TAB_SAVE: _render_save()
 	if _rows.get_child_count() == 0:
 		_rows.add_child(_label("가방에 아이템이 없어요." if _active_tab == TAB_INVENTORY else "지금 가능한 항목이 없어요.", 11))
@@ -344,6 +345,7 @@ func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: 
 			return JSON.stringify([visible_quantities, automation, completed, remaining])
 		TAB_SELL: return JSON.stringify([visible_quantities, automation, gold])
 		TAB_RESEARCH: return JSON.stringify([visible_quantities, completed, state.get("sites", []), state.get("upgrades", []), gold])
+		TAB_VILLAGE: return JSON.stringify([visible_quantities, state.get("village", {}), gold])
 	return str(_active_tab)
 
 func _render_inventory(inventory: Dictionary) -> void:
@@ -506,6 +508,39 @@ func _render_upgrades(upgrades: Array, inventory: Dictionary, gold: int) -> void
 		var needs: Dictionary = cost.get("products", {})
 		var details := "%d G" % money if needs.is_empty() else _describe_items(needs)
 		_add_row(title, details, "강화", "upgrade", upgrade.id, gold >= money and _has_items(inventory, needs))
+
+func _render_village(village: Dictionary, inventory: Dictionary, gold: int) -> void:
+	if village.is_empty():
+		return
+	for facility: Dictionary in village.facilities:
+		var step: Dictionary = facility.step
+		if step.is_empty():
+			var caption := str(facility.stage) if facility.open else "감정소를 먼저 복구하세요."
+			_add_row(facility.name, caption)
+			continue
+		var money := int(step.cost.get("gold", 0))
+		var needs: Dictionary = step.cost.get("products", {})
+		var cost_text := "%d G" % money
+		if not needs.is_empty():
+			cost_text += " · " + _describe_items(needs)
+		_add_row(facility.name, cost_text, step.name, "restore_facility", facility.id, gold >= money and _has_items(inventory, needs))
+	_add_row("미감정 유물", "%d개 보유" % village.unidentified, "감정", "appraise_relic", "appraiser", village.can_appraise)
+	if village.museum:
+		_rows.add_child(_label("박물관 전시 %d / %d" % [village.donations, village.total], 12))
+		if int(village.discount) > 0:
+			_rows.add_child(_label("연구 비용 %d%% 할인" % village.discount, 10))
+	for relic: Dictionary in village.relics:
+		if relic.donated:
+			_add_row(relic.name, "전시 중")
+		else:
+			_add_row(relic.name, "%d개 보유" % relic.quantity, "기증", "donate_relic", relic.id, village.museum and relic.quantity > 0)
+	for specimen: Dictionary in village.specimens:
+		var title := _name_for(specimen.id) + " 표본"
+		if specimen.donated:
+			_add_row(title, "전시 중")
+		else:
+			_add_row(title, "%d개 필요" % specimen.quantity, "기증", "donate_specimen", specimen.id,
+				float(inventory.get(specimen.id, 0)) >= float(specimen.quantity))
 
 func _render_save() -> void:
 	if not _workshop.has_method("import_save"):

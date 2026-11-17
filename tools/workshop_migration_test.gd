@@ -56,6 +56,16 @@ func _run() -> void:
 	_expect(game.upgrade("facility:iron") and game.state.facility.iron == 1, "mining upgrade")
 	_expect(not game.upgrade("facility:plasma"), "locked resource upgrade")
 	_expect(game.upgrade("craft_facility") and game.state.craft_facility == 2, "craft facility upgrade")
+	game.state.gold = 10000.0
+	game.state.inventory.merge({"steel": 50.0, "coalBrick": 4.0, "ironTool": 5.0, "iron": 30.0}, true)
+	_expect(not game.restore_facility("museum"), "museum needs appraiser")
+	_expect(game.restore_facility("appraiser") and game.restore_facility("appraiser"), "appraiser restoration")
+	_expect(game.appraise_relic("appraiser") and game.state.village.codex.size() == 1, "manual mining relics and appraisal")
+	_expect(game.restore_facility("museum") and game.restore_facility("museum"), "museum restoration")
+	if not game.state.village.codex.is_empty():
+		var relic: String = game.state.village.codex[0]
+		_expect(game.donate_relic(relic) and not game.donate_relic(relic), "unique relic donations")
+	_expect(game.donate_specimen("iron") and not game.donate_specimen("iron"), "unique specimen donations")
 	var saved := game.export_save()
 	_expect(not saved.is_empty(), "export save")
 	_expect(game.import_save(saved) and game.state.characters.size() == 1, "save roundtrip")
