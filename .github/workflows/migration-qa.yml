@@ -1,0 +1,40 @@
+name: Godot migration QA
+
+on:
+  push:
+    branches: [codex/godot-migration]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  godot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get Godot 4.4.1
+        shell: bash
+        run: |
+          release=https://github.com/godotengine/godot-builds/releases/download/4.4.1-stable
+          archive=Godot_v4.4.1-stable_linux.x86_64.zip
+          curl --fail --show-error --silent --location --retry 2 --output "$RUNNER_TEMP/$archive" "$release/$archive"
+          unzip -q "$RUNNER_TEMP/$archive" -d "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP/${archive%.zip}" "$RUNNER_TEMP/godot"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Import assets and check scripts
+        shell: bash
+        run: |
+          godot --headless --path . --editor --import 2>&1 | tee "$RUNNER_TEMP/import.log"
+          ! grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$RUNNER_TEMP/import.log"
+      - name: Verify gameplay, save conversion and walking route
+        shell: bash
+        run: |
+          godot --headless --path . --script res://tools/workshop_migration_test.gd 2>&1 | tee "$RUNNER_TEMP/gameplay.log"
+          grep -F 'WORKSHOP MIGRATION PASS' "$RUNNER_TEMP/gameplay.log"
+          godot --headless --path . --script res://tools/save_migration_test.gd 2>&1 | tee "$RUNNER_TEMP/save.log"
+          godot --headless --path . --fixed-fps 60 -- --route-test 2>&1 | tee "$RUNNER_TEMP/route.log"
+          grep -F 'ROUTE PASS' "$RUNNER_TEMP/route.log"
+          ! grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$RUNNER_TEMP/"{gameplay,save,route}.log

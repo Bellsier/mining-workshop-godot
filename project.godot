@@ -4,7 +4,7 @@ config_version=5
 [application]
 
 config/name="Mining Workshop - Godot trial"
-config/description="Godot 4 migration trial: walk from the workshop to the western mountains and through the tunnel."
+config/description="Mining Workshop Godot migration: exploration, mining, production, trade and saves."
 run/main_scene="res://scenes/overworld.tscn"
 config/features=PackedStringArray("4.4", "GL Compatibility")
 
