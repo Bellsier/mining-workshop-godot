@@ -43,10 +43,13 @@ func _run() -> void:
 	game._tick()
 	_expect(game.state.inventory.steel == before + 1.0, "automated craft")
 	_expect(game.buy_auto_sell("coalBrick") and game.set_auto_sell("coalBrick", false), "auto-sale purchase and toggle")
-	_expect(game.unlock("deliveryContract") and not game.snapshot().deliveries.is_empty(), "delivery contract")
-	var offer: Dictionary = game.snapshot().deliveries[0]
-	game.state.inventory[offer.product] = float(offer.qty) + 1.0
-	_expect(game.deliver(offer.id), "deliver first contract")
+	var contractual := game.unlock("deliveryContract")
+	var offers: Array = game.snapshot().deliveries
+	_expect(contractual and not offers.is_empty(), "delivery contract")
+	if not offers.is_empty():
+		var offer: Dictionary = offers[0]
+		game.state.inventory[offer.product] = float(offer.qty) + 1.0
+		_expect(game.deliver(offer.id), "deliver first contract")
 	var saved := game.export_save()
 	_expect(not saved.is_empty(), "export save")
 	_expect(game.import_save(saved) and game.state.characters.size() == 1, "save roundtrip")

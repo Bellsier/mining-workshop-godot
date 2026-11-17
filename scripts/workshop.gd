@@ -124,7 +124,7 @@ func _start_craft(id: String) -> bool:
 		return false
 	_consume(recipe.need)
 	if float(recipe.craftTime) > 0.0:
-			state.queue[id] = float(recipe.craftTime)
+		state.queue[id] = float(recipe.craftTime)
 	else:
 		_add(id, float(recipe.out))
 	return true

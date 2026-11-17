@@ -42,6 +42,5 @@ textures/canvas_textures/default_texture_filter=0
 
 [gui]
 
-theme/custom_font="res://fonts/Galmuri9.ttf"
 theme/default_font_antialiasing=0
 theme/default_font_hinting=0

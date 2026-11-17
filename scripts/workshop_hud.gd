@@ -270,6 +270,8 @@ func _refresh(force := false) -> void:
 	if _active_tab == TAB_SAVE and is_instance_valid(_save_input):
 		return
 	var focused := get_viewport().gui_get_focus_owner()
+	if not force and focused is LineEdit and focused.has_meta("craft_target"):
+		return
 	if not force:
 		if _active_tab == TAB_WORKERS:
 			for picker in _worker_pickers:
@@ -402,7 +404,7 @@ func _render_workers(workers: Array, assigned: Array, resources: Array, gold: in
 		var cost := int(worker.get("cost", 0))
 		var label := str(worker.get("name", id))
 		var tickets := int(worker.get("tickets", 0))
-		var uses_ticket := worker.has("tickets")
+		var uses_ticket: bool = worker.has("tickets")
 		var description := "가챠권 %d장 보유" % tickets if uses_ticket else "%d G" % cost
 		var can_hire := tickets > 0 if uses_ticket else gold >= cost
 		_add_row(label, description, "고용", "hire", id, can_hire and bool(worker.get("available", true)))
@@ -548,6 +550,28 @@ func _add_toggle(actions: VBoxContainer, caption: String, method: String, id: St
 
 func _toggle_automation(enabled: bool, method: String, id: String) -> void:
 	_workshop.call(method, id, enabled)
+	_schedule_refresh()
+
+func _add_craft_target(actions: VBoxContainer, id: String, target: int) -> void:
+	var field := LineEdit.new()
+	field.placeholder_text = "목표 (0 = 무제한)"
+	field.custom_minimum_size = Vector2(100, 25)
+	field.max_length = 6
+	field.text = str(target)
+	field.set_meta("craft_target", true)
+	field.text_submitted.connect(func(_text: String) -> void: field.release_focus())
+	field.focus_exited.connect(_commit_craft_target.bind(field, id, target))
+	actions.add_child(field)
+
+func _commit_craft_target(field: LineEdit, id: String, previous: int) -> void:
+	var value := field.text.strip_edges()
+	if not value.is_empty() and not value.is_valid_int():
+		field.text = str(previous)
+		_show_feedback("목표 수량은 숫자로 입력하세요.")
+		return
+	var amount := clampi(int(value), 0, 999999)
+	if amount != previous:
+		_workshop.call("set_craft_target", id, amount)
 	_schedule_refresh()
 
 func _add_row(title: String, details: String, action := "", method := "", id := "", available := true) -> VBoxContainer:
