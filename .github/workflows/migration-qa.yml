@@ -45,7 +45,7 @@ jobs:
           templates="$HOME/.local/share/godot/export_templates/4.4.1.stable"
           mkdir -p "$templates" "$RUNNER_TEMP/web"
           curl --fail --show-error --silent --location --retry 2 --output "$RUNNER_TEMP/templates.tpz" "$release/Godot_v4.4.1-stable_export_templates.tpz"
-          unzip -p "$RUNNER_TEMP/templates.tpz" templates/web_release.zip > "$templates/web_release.zip"
+          unzip -j "$RUNNER_TEMP/templates.tpz" 'templates/web_nothreads_*.zip' -d "$templates"
           godot --headless --path . --export-release Web "$RUNNER_TEMP/web/index.html"
           test -s "$RUNNER_TEMP/web/index.wasm"
           test -s "$RUNNER_TEMP/web/index.pck"
