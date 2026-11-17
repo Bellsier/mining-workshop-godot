@@ -49,7 +49,7 @@ CI: `.github/workflows/world-qa.yml` (claude/** 푸시). 기존 `--route-test`(R
 
 1. **저장** (`workshop_save.gd`): 저장할 때 `WorldState.current().to_dict()`를 `world`로 넣고, 불러올 때 `WorldState.set_current(WorldState.from_dict(saved.world))`. 형태는 웹 `state.world`와 같습니다(`base`, `mines`, `hiddenMineIds`, `tunnelUnlocked`, 시험 월드면 `seed/size/generatorVersion/chunkEdits`). 웹 저장의 `state.world`를 그대로 넣어도 읽힙니다. 지금은 메모리에만 있어 게임을 끄면 새 배치가 됩니다.
 2. **터널 공사 완료** (연구 `tunnelWork` → 공사 의뢰 → 시간 경과): 완료 시 `WorldState.ensure_current().unlock_tunnel()` 한 줄. 지금은 1단계 터널 서쪽 문으로 들어오면 열린 것으로 봅니다.
-3. **연구**: `explorationGear` 완료 → `state.exploration_gear = true`(발견 반경 2.5→4.0), `geoSurvey`(지질 조사) 완료 → `state.run_survey()`.
+3. **연구**: `explorationGear` 완료 → `state.exploration_gear = true`(발견 반경 2.5→4.0), `geologicalSurvey`(지질 조사) 완료 → `state.run_survey()`.
 4. **채굴**: 월드 지도에서 발견한 광맥 앞 **E** → `Game.workshop.mine(resource)`를 부릅니다(잠금 판정은 공방 쪽 그대로). 광맥별 `developmentState`/등급 효과는 아직 공방에 넘기지 않습니다.
 5. **HUD**: 월드 지도는 화면 왼쪽 아래에 `World/WorldUI/Region`(지역·광맥 수·E 안내)과 `Toast`를 직접 그립니다. HUD로 옮기려면 `world_map.gd`의 `_physics_process` 문구를 `Game._hud`로 넘기면 됩니다.
 
