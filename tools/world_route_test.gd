@@ -51,7 +51,7 @@ func _physics_process(_d: float) -> bool:
 				notes.append("tunnel west door -> world map after %d frames at %s" % [frames, p.position])
 				if not world.tunnel_unlocked:
 					return _fail("arriving from the tunnel did not open it")
-				var beyond := world.mines.filter(func(m: Dictionary) -> bool: return str(m.id).begins_with("mine_beyond_"))
+				var beyond: Array = world.mines.filter(func(m: Dictionary) -> bool: return str(m.id).begins_with("mine_beyond_"))
 				if beyond.size() != 8:
 					return _fail("expected 8 beyond veins, got %d" % beyond.size())
 				var spot: Vector2 = p.position / 64.0
