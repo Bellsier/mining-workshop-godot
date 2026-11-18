@@ -26,6 +26,7 @@ const CHUNK_MAX := 3
 ## The seeded world's corridor through the old east border (web WORLD_CONNECTOR).
 const CONNECTOR := {"minX": 10.0, "maxX": 14.25, "minY": -0.5, "maxY": 0.5}
 
+signal survey_completed(added: Array)
 signal discovered(mine: Dictionary)
 signal tunnel_opened(added: Array)
 
@@ -109,6 +110,7 @@ func run_survey() -> Array:
 	for m: Dictionary in added:
 		mines.append(m)
 		hidden_ids.append(m.id)
+	survey_completed.emit(added)
 	return added
 
 # --- discovery ------------------------------------------------------------------------------------------

@@ -24,6 +24,7 @@ func _ready() -> void:
 	if get_node_or_null("/root/Game") == self:
 		workshop = preload("res://scripts/workshop.gd").new()
 		workshop.name = "WorkshopEconomy"
+		workshop.world_replaced.connect(_reload_world)
 		workshop.persistence_enabled = DisplayServer.get_name() != "headless" and "--route-test" not in OS.get_cmdline_user_args()
 		add_child(workshop)
 		if not workshop.data.is_empty():
@@ -38,6 +39,7 @@ func _ready() -> void:
 		var dir := OS.get_executable_path().get_base_dir() if OS.has_feature("template") else ProjectSettings.globalize_path("res://")
 		_trace_path = dir.path_join("position-trace.txt")
 	if "--route-test" in OS.get_cmdline_user_args():
+		get_tree().call_deferred("change_scene_to_file", "res://scenes/overworld.tscn")
 		var t := Node.new()
 		t.name = "RouteSelfTest"
 		t.set_script(load("res://scripts/self_test.gd"))
@@ -56,6 +58,7 @@ func bind_level(level: Node2D, player: Node2D) -> void:
 	var old_hint := level.get_node_or_null("UI/Hint") as Label
 	if old_hint != null:
 		old_hint.hide()
+	_world = level.get_node_or_null("World")
 	var building := level.get_node_or_null("Workshop") as Node2D
 	if building != null:
 		_world = preload("res://scripts/workshop_world.gd").new()
@@ -65,7 +68,7 @@ func bind_level(level: Node2D, player: Node2D) -> void:
 	if _restoring_position:
 		var saved: Dictionary = workshop.state.position
 		var saved_scene := str(saved.get("scene", ""))
-		if level.scene_file_path != saved_scene and saved_scene == "res://scenes/tunnel.tscn":
+		if level.scene_file_path != saved_scene and saved_scene in ["res://scenes/tunnel.tscn", "res://scenes/world/world_map.tscn"]:
 			go(saved_scene, "FromOutside")
 			return
 		_restoring_position = false
@@ -97,7 +100,10 @@ func _interact() -> void:
 	if _context == "workshop":
 		_hud.open_workshop()
 	elif not _context.is_empty() and not workshop_is_open():
-		workshop.mine(_context)
+		if _world.has_method("mine_near_vein"):
+			_world.mine_near_vein()
+		else:
+			workshop.mine(_context)
 
 func workshop_is_open() -> bool:
 	return _hud != null and _hud.is_workshop_open()
@@ -120,3 +126,7 @@ func report(scene_name: String, pos: Vector2, facing: String) -> void:
 	_web_window.__trial_x = pos.x
 	_web_window.__trial_y = pos.y
 	_web_window.__trial_facing = facing
+
+func _reload_world() -> void:
+	_restoring_position = true
+	go("res://scenes/world/world_map.tscn", "Start")

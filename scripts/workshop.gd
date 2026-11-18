@@ -1,8 +1,10 @@
 extends Node
 
+signal world_replaced
 signal changed
 signal feedback(message: String)
 
+const World = preload("res://scripts/world/world_state.gd")
 const Save = preload("res://scripts/workshop_save.gd")
 const Delivery = preload("res://scripts/workshop_delivery.gd")
 const Village = preload("res://scripts/workshop_village.gd")
@@ -11,6 +13,7 @@ const TICK := 0.1
 
 var data: Dictionary = {}
 var state: Dictionary = {}
+var world: RefCounted
 var player: Node2D
 var persistence_enabled := true
 var _tables: Dictionary = {}
@@ -43,7 +46,7 @@ func _restore(source: Dictionary) -> void:
 		"characters": [], "automation": {"craft": {}, "sell_owned": {}, "sell": {}, "target": {}},
 		"queue": {}, "tickets": 0, "ticket_elapsed": 0.0, "first_ticket": false,
 		"hq_level": 0, "craft_facility": 1, "facility": {}, "workforce": {}, "stats": {},
-		"position": {}, "tunnel_open": false,
+		"position": {}, "tunnel_open": false, "tunnel_remaining": 0.0,
 	}
 	state.merge(source, true)
 	var legacy: Dictionary = source.get("legacy_web_save", {})
@@ -74,6 +77,44 @@ func _restore(source: Dictionary) -> void:
 		state.workforce = _dictionary(run.get("workforce"))
 		state.tunnel_open = bool(_dictionary(run.get("world")).get("tunnelUnlocked", false))
 
+	var world_data: Dictionary = source.get("world", _dictionary(legacy_run.get("world")))
+	world = World.from_dict(world_data) if world_data.has("mines") else World.new_game()
+	World.set_current(world)
+	world.exploration_gear = bool(state.completed_research.get("explorationGear", false))
+	if state.tunnel_open and not world.tunnel_unlocked:
+		world.unlock_tunnel()
+	state.tunnel_open = world.tunnel_unlocked
+	world.discovered.connect(func(_mine): _dirty = true)
+	world.tunnel_opened.connect(func(_added): _dirty = true)
+	# Trial-scene pixels are not coordinates on the unified world map.
+	if str(state.position.get("scene", "")) in ["res://scenes/overworld.tscn", "res://scenes/tunnel.tscn"]:
+		state.position = {}
+	_record_world()
+
+func _record_world() -> void:
+	if world == null:
+		return
+	var value: Dictionary = world.to_dict()
+	if state.get("world", {}) != value:
+		state["world"] = value
+		_dirty = true
+	state.tunnel_open = world.tunnel_unlocked
+
+func mine_vein(id: String) -> bool:
+	var vein: Dictionary = world.mine_by_id(id)
+	if vein.is_empty() or not world.is_discovered(vein):
+		return false
+	return mine(str(vein.resource))
+
+func order_tunnel(_id := "") -> bool:
+	if world.tunnel_unlocked or state.tunnel_remaining > 0.0 or not state.completed_research.get("tunnelWork", false):
+		return false
+	var rules: Dictionary = data.balance.tunnel
+	if not _pay({"gold": rules.COMMISSION_GOLD, "products": rules.COMMISSION_PRODUCTS}):
+		return _reject("터널 공사 비용이 부족해요.")
+	state.tunnel_remaining = float(rules.DURATION_SEC)
+	return _updated("터널 공사를 시작했어요.")
+
 func snapshot() -> Dictionary:
 	var recipes: Array = []
 	var resources: Array = []
@@ -102,6 +143,7 @@ func snapshot() -> Dictionary:
 			{"id": "gold", "name": "인부 뽑기 (골드)", "cost": data.balance.gacha.PULL_COST_GOLD}],
 		"owned_workers": assigned, "worker_details": workers, "tickets": state.tickets, "research": research,
 		"completed_research": state.completed_research, "stats": state.stats, "automation": state.automation,
+		"tunnel": {"open": world.tunnel_unlocked, "remaining": ceili(state.tunnel_remaining), "cost": data.balance.tunnel},
 		"sites": sites, "upgrades": _upgrade_options(), "deliveries": Delivery.offers(data, state),
 		"reputation": Delivery.reputation(data, state), "village": Village.snapshot(data, state.village), "save_error": _save_error}
 
@@ -196,6 +238,11 @@ func unlock(id: String) -> bool:
 	if not _pay(_research_cost(row)):
 		return _reject("연구 비용이 부족해요.")
 	state.completed_research[id] = true
+	if id == "explorationGear":
+		world.exploration_gear = true
+	elif id == "geologicalSurvey":
+		world.run_survey()
+	_record_world()
 	return _updated("연구 완료 · " + row.name)
 
 func _research_cost(row: Dictionary) -> Dictionary:
@@ -341,10 +388,14 @@ func import_save(json_text: String) -> bool:
 	if imported.is_empty() or not _valid_save_state(imported):
 		return _reject("저장 JSON 형식이나 버전을 확인해 주세요.")
 	var old_state := state
+	var old_world := world
 	_restore(imported)
 	if persistence_enabled and Save.save_game(state) != OK:
 		state = old_state
+		world = old_world
+		World.set_current(world)
 		return _reject("기존 저장을 보호하는 중이에요. 가져오기를 적용하지 않았어요.")
+	world_replaced.emit()
 	return _updated("저장 불러오기 완료")
 
 func export_save() -> String:
@@ -378,6 +429,14 @@ func _process(delta: float) -> void:
 
 func _tick() -> bool:
 	var mutated := false
+	if state.tunnel_remaining > 0.0:
+		state.tunnel_remaining = maxf(0.0, float(state.tunnel_remaining) - TICK)
+		mutated = true
+		if state.tunnel_remaining < 0.00001:
+			state.tunnel_remaining = 0.0
+			world.unlock_tunnel()
+			_record_world()
+			feedback.emit("터널 개통 · 산 너머로 갈 수 있어요.")
 	state.ticket_elapsed += TICK
 	var ticket_interval := float(data.balance.gacha.TICKET_TRICKLE_MS) / 1000.0
 	if state.ticket_elapsed >= ticket_interval:
@@ -420,6 +479,21 @@ func _tick() -> bool:
 	return bool(delivery.get("changed", false)) or mutated
 
 func _valid_save_state(imported: Dictionary) -> bool:
+	var legacy: Dictionary = _dictionary(imported.get("legacy_web_save"))
+	var legacy_run: Dictionary = _dictionary(legacy.get("run"))
+	if not imported.has("world") and legacy_run.has("world"):
+		var legacy_world: Variant = legacy_run.world
+		if not legacy_world is Dictionary:
+			return false
+		if legacy_world.has("mines"):
+			if not _valid_world(legacy_world): return false
+		elif not legacy_world.get("tunnelUnlocked", false) is bool:
+			return false
+	if imported.has("world") and not _valid_world(imported.world):
+		return false
+	var remaining: Variant = imported.get("tunnel_remaining", 0.0)
+	if not (remaining is int or remaining is float) or not is_finite(float(remaining)) or float(remaining) < 0.0:
+		return false
 	if not (imported.get("gold") is int or imported.get("gold") is float) or float(imported.gold) < 0.0:
 		return false
 	for key in ["inventory", "completed_research", "unlocked_sites", "automation", "queue", "facility", "workforce", "stats", "position", "legacy_web_save", "delivery"]:
@@ -459,6 +533,7 @@ func _dictionary(value: Variant) -> Dictionary:
 	return value.duplicate(true) if value is Dictionary else {}
 
 func _record_position() -> void:
+	_record_world()
 	if not is_instance_valid(player) or get_tree().current_scene == null:
 		return
 	var value := {"scene": get_tree().current_scene.scene_file_path, "x": player.position.x, "y": player.position.y}
@@ -515,3 +590,28 @@ func _updated(message := "") -> bool:
 func _reject(message: String) -> bool:
 	feedback.emit(message)
 	return false
+
+func _valid_world(value: Variant) -> bool:
+	if not value is Dictionary or not value.get("mines") is Array or not value.get("hiddenMineIds", []) is Array:
+		return false
+	if not value.get("base", {}) is Dictionary or not value.get("chunkEdits", {}) is Dictionary:
+		return false
+	for axis in ["x", "y", "level"]:
+		var v: Variant = value.get("base", {}).get(axis, 0)
+		if not (v is int or v is float) or not is_finite(float(v)) or floor(float(v)) != float(v):
+			return false
+	if not value.get("tunnelUnlocked", false) is bool:
+		return false
+	var ids := {}
+	for m in value.mines:
+		if not m is Dictionary or not m.get("id") is String or ids.has(m.id) or not _tables.resources.has(m.get("resource")):
+			return false
+		for axis in ["x", "y"]:
+			var v: Variant = m.get(axis)
+			if not (v is int or v is float) or not is_finite(float(v)) or floor(float(v)) != float(v) or absf(float(v)) > 32:
+				return false
+		ids[m.id] = true
+	for id in value.get("hiddenMineIds", []):
+		if not id is String or not ids.has(id):
+			return false
+	return true

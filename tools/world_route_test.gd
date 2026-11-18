@@ -24,6 +24,7 @@ func _start() -> void:
 		game.name = "Game"
 		root.add_child(game)
 	world = WorldState.new_game(42)
+	world.unlock_tunnel() # fixture: completed construction, not entry-based unlock
 	WorldState.set_current(world)
 	game.spawn_name = "FromOutside"
 	change_scene_to_file("res://scenes/tunnel.tscn")

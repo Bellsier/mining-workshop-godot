@@ -2,7 +2,7 @@ name: World migration QA
 
 on:
   push:
-    branches: ['claude/**']
+    branches: ['claude/**', 'codex/godot-world-integration']
   workflow_dispatch:
 
 permissions:
@@ -45,6 +45,18 @@ jobs:
             godot --headless --path . --fixed-fps 60 --script res://tools/world_route_test.gd 2>&1 | tee "$RUNNER_TEMP/world-route.log"
             grep -F 'WORLD ROUTE PASS' "$RUNNER_TEMP/world-route.log"
           fi
+      - name: World persistence, construction, research and unified route
+        shell: bash
+        run: |
+          set -o pipefail
+          for test in save_migration_test workshop_migration_test world_integration_test unified_world_route_test world_scene_test; do
+            timeout 90 godot --headless --path . --fixed-fps 60 --script "res://tools/$test.gd" 2>&1 | tee "$RUNNER_TEMP/$test.log"
+          done
+      - name: Failed import preserves world and protected save
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/world-save-failure"
+          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/world-save-failure" godot --headless --path . --script res://tools/world_save_failure_test.gd 2>&1 | tee "$RUNNER_TEMP/save-failure.log"
       - name: No script errors in the runs
         if: always()
         shell: bash

@@ -311,6 +311,7 @@ func _refresh(force := false) -> void:
 		TAB_SELL: _render_sales(resources, products, recipes, inventory, automation, gold)
 		TAB_WORKERS: _render_workers(state.get("workers", []), state.get("worker_details", []), resources, gold)
 		TAB_RESEARCH:
+			_render_tunnel(state.get("tunnel", {}), state.get("completed_research", {}), inventory, gold)
 			_render_research(state.get("research", []), state.get("completed_research", {}), inventory, gold)
 			_render_sites(state.get("sites", []), inventory, gold)
 			_render_upgrades(state.get("upgrades", []), inventory, gold)
@@ -344,7 +345,7 @@ func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: 
 				remaining.append(ceili(float(recipe.get("remaining", 0))))
 			return JSON.stringify([visible_quantities, automation, completed, remaining])
 		TAB_SELL: return JSON.stringify([visible_quantities, automation, gold])
-		TAB_RESEARCH: return JSON.stringify([visible_quantities, completed, state.get("sites", []), state.get("upgrades", []), gold])
+		TAB_RESEARCH: return JSON.stringify([state.get("tunnel", {}), visible_quantities, completed, state.get("sites", []), state.get("upgrades", []), gold])
 		TAB_VILLAGE: return JSON.stringify([visible_quantities, state.get("village", {}), gold])
 	return str(_active_tab)
 
@@ -728,3 +729,15 @@ func _box(fill: Color, border: Color, padding: int) -> StyleBoxFlat:
 	for side in [SIDE_LEFT, SIDE_TOP, SIDE_RIGHT, SIDE_BOTTOM]:
 		box.set_content_margin(side, padding)
 	return box
+
+func _render_tunnel(tunnel: Dictionary, completed: Dictionary, inventory: Dictionary, gold: int) -> void:
+	if tunnel.is_empty():
+		return
+	if tunnel.open:
+		_add_row("산맥 터널", "개통 완료 · 산 너머로 걸어갈 수 있어요.")
+	elif int(tunnel.remaining) > 0:
+		_add_row("터널 공사 중", "%d초 남음 · 진행 상황은 자동 저장돼요." % int(tunnel.remaining))
+	else:
+		var cost: Dictionary = tunnel.cost
+		_add_row("터널 공사 의뢰", "%d G · %s · %d초 · 터널 굴착 연구 필요" % [cost.COMMISSION_GOLD, _describe_items(cost.COMMISSION_PRODUCTS), cost.DURATION_SEC],
+			"의뢰", "order_tunnel", "tunnel", bool(completed.get("tunnelWork", false)) and gold >= cost.COMMISSION_GOLD and _has_items(inventory, cost.COMMISSION_PRODUCTS))

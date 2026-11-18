@@ -5,8 +5,8 @@ extends Node2D
 ## world. 1 web world unit = UNIT pixels (a ground tile is a quarter unit, 16 px).
 ##
 ## Sits as a child of the level root (scripts/level.gd) BEFORE the Player, so the ground and the spawn
-## markers are ready when the level places the player. Entering at "FromTunnel" (the stage-1 tunnel's west
-## door) means the tunnel has been dug: the tunnel opens and the land beyond gets its veins.
+## markers are ready when the level places the player. Only completed construction opens the tunnel.
+## FromTunnel is retained solely for the legacy trial-scene route.
 
 const WorldData := preload("res://scripts/world/world_data.gd")
 const WorldTerrain := preload("res://scripts/world/world_terrain.gd")
@@ -44,8 +44,8 @@ func _ready() -> void:
 	if state == null:
 		state = WorldState.new_game(-1, seeded_world, world_seed)
 		WorldState.set_current(state)
-	if entry == "FromTunnel" and not state.tunnel_unlocked:
-		state.unlock_tunnel()
+	state.tunnel_opened.connect(_on_tunnel_opened)
+	state.survey_completed.connect(func(_added): _sync_bodies.call_deferred())
 	state.discovered.connect(_on_discovered)
 	ground = get_parent().get_node("Ground")
 	player = get_parent().get_node_or_null("Player")
@@ -57,8 +57,8 @@ func _ready() -> void:
 	_place_spawns()
 	_add_static_box("base", Vector2(state.base), WorldData.obstacle_boxes().get("base", {}))
 	_sync_bodies()
-	if state.tunnel_unlocked:
-		_add_passage_door()
+	if state.tunnel_unlocked and entry == "FromTunnel":
+		_add_passage_door() # legacy trial route only; normal play stays on one map
 	_build_ui()
 	call_deferred("_fit_camera")
 
@@ -180,7 +180,7 @@ func _scenery() -> Array:
 # --- play -----------------------------------------------------------------------------------------------
 
 func _physics_process(delta: float) -> void:
-	if player == null:
+	if player == null or get_node("/root/Game").workshop_is_open():
 		return
 	var at := to_units(player.position)
 	_fill_seeded_near(at)
@@ -200,18 +200,10 @@ func _physics_process(delta: float) -> void:
 		if _toast_left <= 0.0:
 			_toast.text = ""
 
-func _unhandled_key_input(event: InputEvent) -> void:
-	if not (event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_E):
-		return
-	if _near_vein.is_empty():
-		return
-	get_viewport().set_input_as_handled()
-	mine_near_vein()
-
 ## Mines the vein the player stands at through the workshop economy, when the game has one
 ## (Game.workshop.mine(resource)). Returns true when something was mined.
 func mine_near_vein() -> bool:
-	if _near_vein.is_empty():
+	if _near_vein.is_empty() or get_node("/root/Game").workshop_is_open():
 		return false
 	var game := get_node_or_null("/root/Game")
 	var economy: Variant = game.get("workshop") if game != null else null
@@ -219,7 +211,7 @@ func mine_near_vein() -> bool:
 	if economy == null or not (economy as Object).has_method("mine"):
 		show_toast("%s 광맥 · 채굴은 공방 연결 후" % res_name)
 		return false
-	var ok: bool = economy.mine(_near_vein.resource)
+	var ok: bool = economy.mine_vein(str(_near_vein.id))
 	show_toast(("%s +1" if ok else "%s 광맥 · 아직 잠겨 있어요") % res_name)
 	return ok
 
@@ -237,6 +229,7 @@ func _build_ui() -> void:
 	add_child(layer)
 	_region_label = Label.new()
 	_region_label.name = "Region"
+	_region_label.add_theme_font_override("font", FONT)
 	_region_label.position = Vector2(6, 232)
 	_region_label.add_theme_font_size_override("font_size", 10)
 	_region_label.add_theme_color_override("font_outline_color", Color.BLACK)
@@ -244,6 +237,7 @@ func _build_ui() -> void:
 	layer.add_child(_region_label)
 	_toast = Label.new()
 	_toast.name = "Toast"
+	_toast.add_theme_font_override("font", FONT)
 	_toast.position = Vector2(6, 216)
 	_toast.add_theme_font_size_override("font_size", 10)
 	_toast.add_theme_color_override("font_color", Color("f7e1b8"))
@@ -317,3 +311,28 @@ func _draw_prop(p: Dictionary) -> void:
 		"oldShaftEntrance":
 			draw_rect(Rect2(at + Vector2(-13, -16), Vector2(26, 16)), Color8(96, 70, 44))
 			draw_rect(Rect2(at + Vector2(-9, -12), Vector2(18, 12)), Color8(30, 26, 24))
+
+func context_at(point: Vector2) -> String:
+	if to_units(point).distance_to(Vector2(state.base)) <= 0.8:
+		return "workshop"
+	var near: Array = state.veins_near(to_units(point), REACH)
+	_near_vein = near[0] if not near.is_empty() else {}
+	return str(_near_vein.id) if not _near_vein.is_empty() else ""
+
+func action_label(id: String) -> String:
+	if id == "workshop":
+		return "공방 열기"
+	var vein: Dictionary = state.mine_by_id(id)
+	return WorldData.resource_name(vein.resource) + " 채굴" if not vein.is_empty() else ""
+
+func _on_tunnel_opened(_added: Array) -> void:
+	_refresh_terrain.call_deferred()
+
+func _refresh_terrain() -> void:
+	ground.clear()
+	_filled_chunks.clear()
+	_fill_legacy()
+	if is_instance_valid(player):
+		_fill_seeded_near(to_units(player.position))
+	_sync_bodies()
+	queue_redraw()
