@@ -210,7 +210,8 @@ async function timeoutRecovery({ page, viewport, mobile, baseline, note }) {
   // Keep subsequent retries uncommitted until we've inspected the baseline.
   await inject(page, { fail: 10 });
   await waitStatus(page, 'failed');
-  assert.ok(await count(page, 'aborted') >= 1);
+  // The game reports the timeout as soon as it aborts; the transaction's abort event follows a moment later.
+  await page.waitForFunction(() => qaWrites.aborted >= 1, undefined, { timeout: 5000 });
   assert.equal(await count(page, 'committed'), 0);
   assert.deepEqual(await store.read(page), baseline);
   await inject(page, { fail: 0 });
