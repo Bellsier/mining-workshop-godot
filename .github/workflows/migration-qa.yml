@@ -68,6 +68,9 @@ jobs:
     needs: godot
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright:v1.56.1-noble
+      options: --ipc=host
     timeout-minutes: 12
     env:
       VISUAL_QA_SHA: ${{ github.sha }}
@@ -92,12 +95,10 @@ jobs:
         with:
           name: mining-workshop-godot-web
           path: ${{ env.VISUAL_QA_WEB }}
-      - name: Install Playwright Chromium
+      - name: Install visual QA Node.js dependencies
         if: needs.godot.result == 'success'
         working-directory: tests/visual
-        run: |
-          npm ci
-          npx playwright install --with-deps chromium
+        run: npm ci
       - name: Capture visual QA scenarios
         id: capture
         if: needs.godot.result == 'success'

@@ -1,6 +1,6 @@
 # Godot 웹 시각 QA
 
-`Godot migration QA`의 Chromium 작업은 같은 Actions 실행에서 만든 Godot 4.4.1 웹 빌드 산출물을 내려받습니다. Ubuntu 24.04 러너의 Playwright가 빌드를 루프백에 띄우고, GitHub Actions에서 발급한 별도 서버나 외부 프리뷰 주소 없이 게임을 조작합니다. 기존 Godot 회귀 검사는 계속 실행됩니다.
+`Godot migration QA`의 Chromium 작업은 같은 Actions 실행에서 만든 Godot 4.4.1 웹 빌드 산출물을 내려받습니다. Ubuntu 24.04 기반 Microsoft Playwright 1.56.1 이미지에 포함된 Chromium으로 Playwright가 빌드를 루프백에 띄우고, GitHub Actions에서 발급한 별도 서버나 외부 프리뷰 주소 없이 게임을 조작합니다. 기존 Godot 회귀 검사는 계속 실행됩니다.
 
 ## 캡처와 검증 범위
 
