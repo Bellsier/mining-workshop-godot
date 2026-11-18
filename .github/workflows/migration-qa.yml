@@ -25,12 +25,21 @@ jobs:
     env:
       # Firefox refuses to start as root when $HOME belongs to another user (Playwright container note).
       HOME: /root
+      LIBGL_ALWAYS_SOFTWARE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: mining-workshop-godot-web
           path: ${{ runner.temp }}/save-qa-web
+      - name: Software OpenGL for Firefox
+        # Firefox has no bundled software GL (Chromium uses SwiftShader): without Mesa in the
+        # container it reports "Exhausted GL driver options" and the Godot build cannot start.
+        if: matrix.browser == 'firefox'
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            libgl1-mesa-dri libegl1 libegl-mesa0 libglx-mesa0 libgles2 > /dev/null
       - name: Install save QA dependencies
         working-directory: tests/web-save
         run: npm ci
