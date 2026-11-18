@@ -10,6 +10,7 @@ const Delivery = preload("res://scripts/workshop_delivery.gd")
 const Village = preload("res://scripts/workshop_village.gd")
 const CATALOG := "res://data/web_catalog.json"
 const TICK := 0.1
+const WEB_SYNC_RETRIES := 2
 
 var data: Dictionary = {}
 var state: Dictionary = {}
@@ -19,6 +20,7 @@ var persistence_enabled := true
 var _tables: Dictionary = {}
 var _elapsed := 0.0
 var _save_elapsed := 0.0
+var _web_sync_retries := 0
 var _dirty := false
 var _save_error := OK
 var _save_blocked := false
@@ -407,8 +409,15 @@ func flush() -> void:
 		return
 	_record_position()
 	if not _dirty:
+		if _web_sync_retries > 0:
+			_web_sync_retries -= 1
+			JavaScriptBridge.force_fs_sync()
 		return
 	var result := Save.save_game(state)
+	if result == OK and OS.has_feature("web") and OS.is_userfs_persistent():
+		# Godot writes to its virtual filesystem before syncing to IndexedDB.
+		# Ask it to sync again on later autosave ticks in case the browser write failed.
+		_web_sync_retries = WEB_SYNC_RETRIES
 	if result != OK and result != _save_error:
 		feedback.emit("자동 저장에 실패했어요. 저장 탭에서 JSON을 백업할 수 있어요.")
 	_save_error = result

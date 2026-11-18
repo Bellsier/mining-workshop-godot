@@ -226,11 +226,13 @@ func _on_discovered(mine: Dictionary) -> void:
 func _build_ui() -> void:
 	var layer := CanvasLayer.new()
 	layer.name = "WorldUI"
+	# Reserve the resting joystick area on touch displays.
+	var text_left := 104 if DisplayServer.is_touchscreen_available() else 6
 	add_child(layer)
 	_region_label = Label.new()
 	_region_label.name = "Region"
 	_region_label.add_theme_font_override("font", FONT)
-	_region_label.position = Vector2(6, 232)
+	_region_label.position = Vector2(text_left, 232)
 	_region_label.add_theme_font_size_override("font_size", 10)
 	_region_label.add_theme_color_override("font_outline_color", Color.BLACK)
 	_region_label.add_theme_constant_override("outline_size", 3)
@@ -238,7 +240,7 @@ func _build_ui() -> void:
 	_toast = Label.new()
 	_toast.name = "Toast"
 	_toast.add_theme_font_override("font", FONT)
-	_toast.position = Vector2(6, 216)
+	_toast.position = Vector2(text_left, 216)
 	_toast.add_theme_font_size_override("font_size", 10)
 	_toast.add_theme_color_override("font_color", Color("f7e1b8"))
 	_toast.add_theme_color_override("font_outline_color", Color.BLACK)
