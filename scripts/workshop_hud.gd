@@ -38,6 +38,22 @@ var _active_tab := 0
 var _refresh_pending := false
 var _render_key := ""
 var _worker_pickers: Array[OptionButton] = []
+var _recovery: ColorRect
+var _recovery_title: Label
+var _recovery_message: Label
+var _recovery_actions: HFlowContainer
+var _recovery_text: TextEdit
+var _recovery_status := ""
+var _save_tab_key := ""
+
+const SAVE_LABELS := {
+	"loading": "저장 불러오는 중…", "pending": "저장 예정", "saving": "저장 중…",
+	"importing": "가져온 저장 기록 중…", "saved": "저장됨", "saved_basic": "저장됨 · 기본 보장",
+	"failed": "저장 실패 · 곧 다시 시도", "quota": "저장 공간 부족 · 백업 필요",
+	"conflict": "다른 곳에서 저장됨 · 저장 멈춤", "other_tab": "다른 탭 사용 중 · 저장 안 됨",
+	"protected": "기존 저장 보호 중 · 저장 안 됨", "unavailable": "저장 불가 · 저장 탭 확인",
+}
+const SAVE_ATTENTION := ["failed", "quota", "conflict", "other_tab", "protected", "unavailable"]
 
 func setup(workshop: Node) -> void:
 	if is_instance_valid(_workshop):
@@ -63,6 +79,7 @@ func _ready() -> void:
 	_build_bar(surface)
 	_build_overlay(surface)
 	_build_toast(surface)
+	_build_recovery(surface)
 	set_action(_action_label, _action_callback)
 	set_context_hint(_context_hint_text)
 	_refresh()
@@ -140,13 +157,13 @@ func _open(only_inventory: bool) -> void:
 	_refresh(true)
 
 func _build_bar(surface: Control) -> void:
-	_save_indicator = _label("", 9)
+	_save_indicator = _label("", 10)
 	_save_indicator.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_save_indicator.add_theme_color_override("font_outline_color", Color("211c18"))
-	_save_indicator.add_theme_constant_override("outline_size", 3)
+	_save_indicator.add_theme_constant_override("outline_size", 4)
 	surface.add_child(_save_indicator)
 	_save_indicator.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	_save_indicator.offset_left = -132
+	_save_indicator.offset_left = -200
 	_save_indicator.offset_right = -5
 	_save_indicator.offset_top = 4
 	_bar = PanelContainer.new()
@@ -583,6 +600,37 @@ func _render_save() -> void:
 	if _workshop.has_method("export_save"):
 		actions.add_child(_button("내보내기", _export_save))
 		actions.add_child(_button("텍스트 전체 선택", _select_save_text))
+	_render_save_status()
+
+## Below the import/export controls: what is guaranteed now, and the recovery actions on offer.
+func _render_save_status() -> void:
+	if not _workshop.has_method("save_notice"):
+		return
+	var notice: Dictionary = _workshop.call("save_notice")
+	var status := str(notice.status)
+	var lines: PackedStringArray = ["저장 상태: " + str(SAVE_LABELS.get(status, status))]
+	if not str(notice.title).is_empty():
+		lines.append(str(notice.title) + " — " + str(notice.message))
+	if status == "saved_basic":
+		lines.append("이 브라우저는 저장이 디스크까지 기록됐는지 확인해 주지 않아요. 중요한 진행은 JSON으로 백업하세요.")
+	var persisted := str(_workshop.get("storage_persisted"))
+	if persisted == "no":
+		lines.append("브라우저가 공간이 부족할 때 사이트 데이터를 정리할 수 있어요. '저장 공간 보호 요청'이나 JSON 백업을 권해요.")
+	elif persisted == "yes":
+		lines.append("브라우저가 이 사이트의 저장 공간을 보호하고 있어요(사이트 데이터 삭제 시에는 사라져요).")
+	var summary := _label("\n".join(lines), 10)
+	summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_rows.add_child(summary)
+	var extra := HFlowContainer.new()
+	extra.add_theme_constant_override("h_separation", 6)
+	_rows.add_child(extra)
+	var list: Array = notice.get("actions", []).duplicate()
+	if OS.has_feature("web"):
+		list.append({"id": "download", "label": "파일로 내려받기", "enabled": true})
+		if persisted in ["no", ""]:
+			list.append({"id": "persist", "label": "저장 공간 보호 요청", "enabled": true})
+	_fill_save_actions(extra, list)
+	_save_tab_key = _save_notice_key(notice)
 
 func _on_save_input_changed() -> void:
 	_save_draft = _save_input.text
@@ -602,6 +650,10 @@ func _export_save() -> void:
 	_save_draft = exported
 	_select_save_text()
 	_show_feedback("선택된 저장 텍스트를 복사할 수 있어요.")
+
+func _download_save() -> void:
+	if not bool(_workshop.call("download_save")):
+		_show_feedback("내보낼 저장 데이터가 없어요.")
 
 func _select_save_text() -> void:
 	_save_input.grab_focus()
@@ -682,18 +734,122 @@ func _perform(method: String, id: String) -> void:
 func _show_save_status(status: String) -> void:
 	if not is_instance_valid(_save_indicator):
 		return
-	var label: String = {
-		"loading": "저장 불러오는 중", "pending": "자동 저장 대기", "saving": "자동 저장 중",
-		"importing": "가져온 데이터 저장 중", "saved": "자동 저장 완료",
-		"failed": "저장 실패 · JSON 백업", "conflict": "다른 탭 저장 · 백업 필요",
-		"protected": "기존 저장 보호 중", "unavailable": "저장 확인 불가",
-	}.get(status, "")
-	var attention := status in ["failed", "conflict", "protected", "unavailable"]
+	var label: String = SAVE_LABELS.get(status, "")
+	var detail := str(_workshop.get("save_detail")) if is_instance_valid(_workshop) else ""
+	if status == "loading" and not detail.is_empty():
+		label += " (%s)" % detail
+	var attention := status in SAVE_ATTENTION
 	for indicator in [_save_indicator, _panel_save_indicator]:
 		indicator.text = label
 		indicator.add_theme_color_override("font_color", Color("ffc18c") if attention else PAPER)
 	# Keep the import UI and its draft visible until the transaction answers.
 	_overlay.process_mode = Node.PROCESS_MODE_DISABLED if status == "importing" else Node.PROCESS_MODE_INHERIT
+	_update_recovery()
+	# Re-render the save tab only when what it offers changed, not on every routine save, so a
+	# selection being copied is not lost.
+	if is_workshop_open() and _active_tab == TAB_SAVE and _workshop.has_method("save_notice"):
+		if _save_notice_key(_workshop.call("save_notice")) != _save_tab_key:
+			_rerender_save_tab()
+
+# --- save recovery ------------------------------------------------------------------------------------
+
+func _build_recovery(surface: Control) -> void:
+	_recovery = ColorRect.new()
+	_recovery.color = Color(0.03, 0.03, 0.04, 0.78)
+	_recovery.mouse_filter = Control.MOUSE_FILTER_STOP
+	_recovery.hide()
+	surface.add_child(_recovery)
+	_recovery.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", _box(Color("2c2420"), Color("e0a36b"), 8))
+	_recovery.add_child(panel)
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	panel.offset_left = 24
+	panel.offset_top = 18
+	panel.offset_right = -24
+	panel.offset_bottom = -18
+	var layout := VBoxContainer.new()
+	layout.add_theme_constant_override("separation", 6)
+	panel.add_child(layout)
+	_recovery_title = _label("", 14)
+	_recovery_title.add_theme_color_override("font_color", Color("ffc18c"))
+	layout.add_child(_recovery_title)
+	_recovery_message = _label("", 11)
+	_recovery_message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	layout.add_child(_recovery_message)
+	_recovery_actions = HFlowContainer.new()
+	_recovery_actions.add_theme_constant_override("h_separation", 6)
+	_recovery_actions.add_theme_constant_override("v_separation", 4)
+	layout.add_child(_recovery_actions)
+	_recovery_text = TextEdit.new()
+	_recovery_text.editable = false
+	_recovery_text.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	_recovery_text.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_recovery_text.add_theme_font_size_override("font_size", 10)
+	_recovery_text.placeholder_text = "내보낸 저장이 여기에 나타나요. 전체 선택 후 복사해 보관하세요."
+	_recovery_text.hide()
+	layout.add_child(_recovery_text)
+
+func _update_recovery() -> void:
+	if not is_instance_valid(_recovery) or not is_instance_valid(_workshop) or not _workshop.has_method("save_notice"):
+		return
+	var notice: Dictionary = _workshop.call("save_notice")
+	if not bool(notice.get("modal", false)):
+		_recovery.hide()
+		_recovery_status = ""
+		_recovery_text.text = ""
+		_recovery_text.hide()
+		return
+	if is_workshop_open():
+		close_workshop()
+	if _recovery_status != str(notice.status):
+		_recovery_text.text = ""
+		_recovery_text.hide()
+	_recovery_status = str(notice.status)
+	_recovery_title.text = str(notice.title)
+	_recovery_message.text = str(notice.message)
+	_fill_save_actions(_recovery_actions, notice.get("actions", []))
+	_recovery.show()
+
+func _fill_save_actions(container: Container, actions: Array) -> void:
+	for child in container.get_children():
+		container.remove_child(child)
+		child.queue_free()
+	for action: Dictionary in actions:
+		var button := _button(str(action.label), _on_save_action.bind(str(action.id), container == _recovery_actions))
+		button.disabled = not bool(action.get("enabled", true))
+		button.set_meta("save_action", str(action.id))
+		container.add_child(button)
+
+func _on_save_action(id: String, from_recovery: bool) -> void:
+	if id == "download":
+		_download_save()
+		return
+	var text := str(_workshop.call("save_action", id))
+	if text.is_empty():
+		_update_recovery()
+		return
+	if from_recovery:
+		_recovery_text.text = text
+		_recovery_text.show()
+		_recovery_text.grab_focus()
+		_recovery_text.select_all()
+	elif is_instance_valid(_save_input):
+		_save_input.text = text
+		_save_draft = text
+		_select_save_text()
+	_show_feedback("선택된 저장 텍스트를 복사해 보관하세요." + (" 파일로도 내려받았어요." if OS.has_feature("web") and id == "export_raw" else ""))
+	_update_recovery()
+
+func _save_notice_key(notice: Dictionary) -> String:
+	var status := str(notice.get("status", ""))
+	if status in ["pending", "saving", "saved", "importing", "loading", "idle"]:
+		status = "ok"
+	return status + "|" + JSON.stringify(notice.get("actions", [])) + "|" + str(_workshop.get("storage_persisted"))
+
+func _rerender_save_tab() -> void:
+	_save_input = null
+	_refresh(true)
 
 func _show_feedback(message: String) -> void:
 	if not is_node_ready():

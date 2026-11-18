@@ -1,33 +1,45 @@
 // Test fixtures and readback only. Production commits come from the game.
-function access(page, state) {
-  return page.evaluate(replacement => new Promise((resolve, reject) => {
+const SLOT = 'slot:main';
+
+// Raw access to the game's store. Writes are only allowed from the isolated fixture page.
+function raw(page, op, key, value) {
+  return page.evaluate(({ op, key, value }) => new Promise((resolve, reject) => {
+    if (op === 'put' && (location.hostname !== '127.0.0.1' || location.pathname !== '/__qa_fixture')) {
+      reject(Error('Fixture writes require the isolated test page'));
+      return;
+    }
     const request = indexedDB.open('mining-workshop-godot', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('saves');
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;
       try {
-        const txn = db.transaction('saves', replacement ? 'readwrite' : 'readonly');
-        const cursor = txn.objectStore('saves').openCursor();
-        let value;
-        cursor.onsuccess = () => {
-          const row = cursor.result;
-          if (!row) return;
-          value = { key: row.key, revision: row.value.revision, ...JSON.parse(row.value.text) };
-          if (replacement) {
-            if (location.hostname !== '127.0.0.1' || location.pathname !== '/__qa_fixture') {
-              txn.abort();
-              return;
-            }
-            row.update({ revision: value.revision + '-qa', text: JSON.stringify({ version: 1, state: replacement }) });
-          }
-        };
-        txn.oncomplete = () => { db.close(); resolve(value); };
-        txn.onabort = () => { db.close(); reject(txn.error || Error('Fixture transaction aborted')); };
+        const tx = db.transaction('saves', op === 'put' ? 'readwrite' : 'readonly');
+        const store = tx.objectStore('saves');
+        const req = op === 'put' ? store.put(value, key) : op === 'keys' ? store.getAllKeys() : store.get(key);
+        tx.oncomplete = () => { db.close(); resolve(op === 'put' ? true : req.result); };
+        tx.onabort = () => { db.close(); reject(tx.error || Error('Fixture transaction aborted')); };
       } catch (error) { db.close(); reject(error); }
     };
-  }), state || null);
+  }), { op, key, value: value === undefined ? null : value });
 }
 
+// The active save as { key, revision, version, state, migratedFrom } (undefined when there is none).
+async function read(page) {
+  const record = await raw(page, 'get', SLOT);
+  if (!record) return undefined;
+  return { key: SLOT, revision: record.revision, ...JSON.parse(record.text) };
+}
+
+// Replace the active save's state for a scenario (the game must not be running in this page).
+async function replace(page, state) {
+  const current = await raw(page, 'get', SLOT);
+  const revision = (current?.revision || 'none') + '-qa';
+  await raw(page, 'put', SLOT, { revision, text: JSON.stringify({ version: 1, state }) });
+  return revision;
+}
+
+// The first web build's file in Godot's own IndexedDB mirror of user:// (read for migration only).
 function legacy(page, key, write = null) {
   return page.evaluate(({ key, write }) => new Promise((resolve, reject) => {
     if (write && (location.hostname !== '127.0.0.1' || location.pathname !== '/__qa_fixture')) {
@@ -61,4 +73,5 @@ function legacy(page, key, write = null) {
     };
   }), { key, write });
 }
-module.exports = { read: page => access(page), replace: access, legacy };
+
+module.exports = { SLOT, raw, read, replace, legacy };

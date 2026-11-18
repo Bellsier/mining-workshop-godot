@@ -115,7 +115,8 @@ func world_input_blocked() -> bool:
 
 func _notification(what: int) -> void:
 	if is_instance_valid(workshop) and what in [NOTIFICATION_WM_CLOSE_REQUEST, NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]:
-		workshop.flush()
+		# Closing, losing focus or going to the background: save now, even if only the position changed.
+		workshop.flush(true)
 
 ## Publishes the player state for tests: window.__trial_* on the web, position-trace.txt with --trace-position.
 func report(scene_name: String, pos: Vector2, facing: String) -> void:

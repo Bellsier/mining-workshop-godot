@@ -11,13 +11,17 @@ permissions:
 
 jobs:
   web-save:
-    name: Web save durability (Chromium)
+    name: Web save durability (${{ matrix.browser }})
     needs: godot
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
     container:
       image: mcr.microsoft.com/playwright:v1.56.1-noble
       options: --ipc=host
-    timeout-minutes: 12
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -27,17 +31,25 @@ jobs:
       - name: Install save QA dependencies
         working-directory: tests/web-save
         run: npm ci
-      - name: Check delayed, rejected and interrupted saves
+      - name: IndexedDB save module in ${{ matrix.browser }}
         working-directory: tests/web-save
         env:
+          SAVE_QA_BROWSERS: ${{ matrix.browser }}
+          SAVE_QA_OUTPUT: ${{ runner.temp }}/save-qa-results/${{ matrix.browser }}
+        run: node store-unit.cjs
+      - name: Game saves in ${{ matrix.browser }} (delayed, rejected, interrupted, migrated, protected)
+        if: ${{ !cancelled() }}
+        working-directory: tests/web-save
+        env:
+          SAVE_QA_BROWSER: ${{ matrix.browser }}
           SAVE_QA_WEB: ${{ runner.temp }}/save-qa-web
           SAVE_QA_OUTPUT: ${{ runner.temp }}/save-qa-results
-        run: npm test
+        run: node run.cjs
       - name: Keep browser save evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: godot-web-save-qa
+          name: godot-web-save-qa-${{ matrix.browser }}
           path: ${{ runner.temp }}/save-qa-results
           retention-days: 30
 
@@ -66,9 +78,15 @@ jobs:
           godot --headless --path . --script res://tools/workshop_migration_test.gd 2>&1 | tee "$RUNNER_TEMP/gameplay.log"
           grep -F 'WORKSHOP MIGRATION PASS' "$RUNNER_TEMP/gameplay.log"
           godot --headless --path . --script res://tools/save_migration_test.gd 2>&1 | tee "$RUNNER_TEMP/save.log"
+          grep -F 'Save migration tests passed' "$RUNNER_TEMP/save.log"
+          mkdir -p "$RUNNER_TEMP/save-recovery"
+          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/save-recovery" godot --headless --path . --script res://tools/save_recovery_test.gd 2>&1 | tee "$RUNNER_TEMP/recovery.log"
+          grep -F 'SAVE RECOVERY PASS' "$RUNNER_TEMP/recovery.log"
           godot --headless --path . --fixed-fps 60 -- --route-test 2>&1 | tee "$RUNNER_TEMP/route.log"
           grep -F 'ROUTE PASS' "$RUNNER_TEMP/route.log"
           ! grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$RUNNER_TEMP/"{gameplay,save,route}.log
+          # The recovery test provokes failed writes on purpose; only script errors fail it here.
+          ! grep -E 'SCRIPT ERROR:|Parse Error:' "$RUNNER_TEMP/recovery.log"
       - name: Build private Web preview
         shell: bash
         run: |

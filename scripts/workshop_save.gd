@@ -16,6 +16,35 @@ static func load_game() -> Dictionary:
 	return _load_game(_existing_path(SAVE_PATH))
 
 
+## The save file's text exactly as stored (the one load_game reads), for exporting a protected save.
+static func read_raw() -> String:
+	var path := _existing_path(SAVE_PATH)
+	return FileAccess.get_file_as_string(path) if FileAccess.file_exists(path) else ""
+
+
+## Moves an unreadable (corrupt or newer-version) save and its recovery copy out of the way by renaming,
+## so a new save can be written without destroying them. Returns the kept paths; [] = nothing changed.
+static func set_aside_protected() -> Array[String]:
+	var kept: Array[String] = []
+	var stamp := "%d-%s" % [int(Time.get_unix_time_from_system()), Crypto.new().generate_random_bytes(3).hex_encode()]
+	_save_lock.lock()
+	for path: String in [SAVE_PATH, SAVE_PATH + ".previous"]:
+		if not FileAccess.file_exists(path):
+			continue
+		var target := "%s.protected-%s%s.json" % [SAVE_PATH.get_basename(), stamp, "" if path == SAVE_PATH else "-previous"]
+		var result := DirAccess.rename_absolute(ProjectSettings.globalize_path(path), ProjectSettings.globalize_path(target))
+		if result != OK:
+			# Put back what was already moved; the protected files stay exactly where they were.
+			for index in range(kept.size() - 1, -1, -1):
+				var original := SAVE_PATH if index == 0 and not kept[index].ends_with("-previous.json") else SAVE_PATH + ".previous"
+				DirAccess.rename_absolute(ProjectSettings.globalize_path(kept[index]), ProjectSettings.globalize_path(original))
+			_save_lock.unlock()
+			return [] as Array[String]
+		kept.append(target)
+	_save_lock.unlock()
+	return kept
+
+
 ## State must contain JSON-compatible values. Empty dictionaries are reserved for failed loads.
 static func save_game(state: Dictionary) -> Error:
 	var text := export_game(state)

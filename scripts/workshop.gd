@@ -12,26 +12,63 @@ const Village = preload("res://scripts/workshop_village.gd")
 const CATALOG := "res://data/web_catalog.json"
 const TICK := 0.1
 const WEB_SAVE_SCRIPT := "res://scripts/workshop_web_save.js"
+## Where an import keeps the save it replaced, and where a set-aside protected save is kept (web).
+const WEB_IMPORT_BACKUP := "slot:main:before-import"
+const WEB_PROTECTED_BACKUP := "slot:main:protected:"
+const AUTOSAVE_INTERVAL := 2.0
+## Walking alone is saved at most this often (and whenever the page is hidden or closed).
+const POSITION_SAVE_INTERVAL := 15.0
+const LOAD_RETRY_DELAYS := [0.5, 1.5, 3.0]
+const FAILURE_RETRY_DELAYS := [2.0, 4.0, 8.0, 16.0, 30.0]
+const QUOTA_RETRY_DELAYS := [15.0, 30.0, 60.0]
+const LOCK_WAIT_MS := 3000
+## Statuses that need the player's decision before saving can go on.
+const CHOICE_STATUSES := ["unavailable", "other_tab", "protected", "conflict"]
 
 var data: Dictionary = {}
 var state: Dictionary = {}
 var world: RefCounted
 var player: Node2D
 var persistence_enabled := true
+## loading | pending | saving | saved | saved_basic | importing | failed | quota |
+## unavailable | other_tab | protected | conflict | idle
 var save_status := "idle"
+## Extra words for the status (load attempt, error name, protected reason).
+var save_detail := ""
+## "strict" when the browser promised the last write reached storage, "basic" otherwise, "" before a write.
+var save_durability := ""
+## Browser storage persistence: yes | no | unsupported | unknown | "" (not asked yet).
+var storage_persisted := ""
 var _tables: Dictionary = {}
 var _elapsed := 0.0
 var _save_elapsed := 0.0
 var _web_api: JavaScriptObject
-var _web_callback: JavaScriptObject
+var _web_callbacks: Dictionary = {}
 var _web_revision := ""
+## "" | claim | loading | autosave | import | set_aside
 var _web_operation := ""
 var _web_candidate: Dictionary = {}
+var _migrated_from := ""
 var _legacy_save: Dictionary = {}
 var _legacy_present := false
+var _load_attempt := 0
+var _keep_session_if_missing := false
+var _choice_pending := false
+var _offline := false
+var _protected_raw := ""
+var _protected_reason := ""
+var _protected_revision := ""
+var _protected_source := ""
+var _protected_exported := false
 var _dirty := false
+var _dirty_gameplay := false
 var _save_error := OK
 var _save_blocked := false
+var _retry_at := 0.0
+var _retry_count := 0
+var _last_commit_at := -INF
+var _flush_after_operation := false
+var _web_candidate_gameplay := false
 
 func _ready() -> void:
 	var catalog: Variant = JSON.parse_string(FileAccess.get_file_as_string(CATALOG))
@@ -47,74 +84,339 @@ func _ready() -> void:
 	var saved := Save.load_game() if persistence_enabled else {}
 	var present := persistence_enabled and Save.has_file()
 	if persistence_enabled and OS.has_feature("web"):
+		# The first web build kept the save in Godot's user:// folder. It is only read, for migration.
 		_legacy_save = saved
 		_legacy_present = present
-		_web_operation = "loading"
+		_web_operation = "claim"
 		_set_save_status("loading")
 		_restore({})
-		_start_web_load.call_deferred()
+		_start_web.call_deferred()
 	else:
 		_load_initial_state(saved, present)
 		if not persistence_enabled:
 			_set_save_status("idle")
 
-func _load_initial_state(saved: Dictionary, present: bool, confirmed := true) -> void:
-	_save_blocked = present and not _valid_save_state(saved)
-	_save_error = ERR_FILE_CORRUPT if _save_blocked else OK
+## Desktop start (and the web's Godot-file fallback): a present file that cannot be read is protected.
+func _load_initial_state(saved: Dictionary, present: bool) -> void:
+	_clear_protected()
 	_dirty = false
-	_restore({} if _save_blocked else saved)
-	if _save_blocked:
-		_set_save_status("protected")
-	elif confirmed and present and not _dirty:
-		_set_save_status("saved")
-	else:
-		_set_save_status("pending")
+	_dirty_gameplay = false
+	if present and not _valid_save_state(saved):
+		_protect(Save.read_raw(), "", ProjectSettings.globalize_path(Save.SAVE_PATH))
+		_restore({})
+		return
+	_save_blocked = false
+	_save_error = OK
+	_restore(saved)
+	if not present:
+		_dirty = persistence_enabled
+		_dirty_gameplay = persistence_enabled
+	_last_commit_at = _now() if present else -INF
+	# Normalizing an older save can change it; it is then saved again on the next tick.
+	_set_save_status("pending" if _dirty or not present else "saved")
 
 func input_frozen() -> bool:
-	return _web_operation in ["loading", "import"]
+	return _web_operation in ["claim", "loading", "import", "set_aside"] or _choice_pending
 
-func _set_save_status(status: String) -> void:
-	if status == save_status:
+func _set_save_status(status: String, detail := "") -> void:
+	if status == save_status and detail == save_detail:
 		return
 	save_status = status
+	save_detail = detail
 	save_status_changed.emit(status)
 
-func _mark_dirty() -> void:
+func _mark_dirty(position_only := false) -> void:
 	_dirty = true
-	if save_status in ["idle", "saved"] and persistence_enabled:
+	if not position_only:
+		_dirty_gameplay = true
+	if save_status in ["idle", "saved", "saved_basic"] and persistence_enabled:
 		_set_save_status("pending")
 
-func _start_web_load() -> void:
+func _now() -> float:
+	return Time.get_ticks_msec() / 1000.0
+
+# --- web storage --------------------------------------------------------------------------------------
+
+func _start_web() -> void:
 	var source := FileAccess.get_file_as_string(WEB_SAVE_SCRIPT)
 	if not source.is_empty():
 		JavaScriptBridge.eval(source, true)
 		_web_api = JavaScriptBridge.get_interface("miningWorkshopSave")
 	if _web_api == null:
-		_finish_web_load(["error", "", ""])
+		_on_web_load(["error", "", "", "", "no-api"])
 		return
-	_web_callback = JavaScriptBridge.create_callback(_finish_web_operation)
-	_web_api.load(OS.get_user_data_dir(), _web_callback)
+	_web_api.onHide(_web_callback(_on_page_hidden))
+	_web_api.persist(false, _web_callback(_on_persist))
+	_claim()
 
-func _finish_web_load(args: Array) -> void:
-	_web_operation = ""
+## One JavaScript callback per handler, created once and kept referenced while the browser may call it.
+## (Only one storage request runs at a time, so a handler never has two answers in flight.)
+func _web_callback(method: Callable) -> JavaScriptObject:
+	var key := method.get_method()
+	if not _web_callbacks.has(key):
+		_web_callbacks[key] = JavaScriptBridge.create_callback(method)
+	return _web_callbacks[key]
+
+func _claim() -> void:
+	_web_operation = "claim"
+	_set_save_status("loading")
+	_web_api.claim(LOCK_WAIT_MS, _web_callback(_on_claim))
+
+func _on_claim(args: Array) -> void:
+	if str(args[0]) == "busy":
+		_web_operation = ""
+		_save_blocked = true
+		_enter_choice("other_tab")
+		return
+	_load_attempt = 0
+	_web_load()
+
+func _web_load() -> void:
+	_web_operation = "loading"
+	_load_attempt += 1
+	_set_save_status("loading", "%d/%d" % [_load_attempt, LOAD_RETRY_DELAYS.size() + 1] if _load_attempt > 1 else "")
+	_web_api.load(JSON.stringify([OS.get_user_data_dir()]), _web_callback(_on_web_load))
+
+func _on_web_load(args: Array) -> void:
 	var status := str(args[0])
-	if status == "loaded":
-		_web_revision = str(args[2])
-		_load_initial_state(Save.parse_game(str(args[1])), true)
-	elif status == "missing" and OS.is_userfs_persistent():
-		_load_initial_state(_legacy_save, _legacy_present, false)
-		if not _save_blocked:
-			_dirty = true
-			_set_save_status("pending")
-	else:
-		# An unknown read result must never be treated as an empty slot.
-		_load_initial_state(_legacy_save, _legacy_present, false)
+	var text := str(args[1]) if args.size() > 1 else ""
+	var revision := str(args[2]) if args.size() > 2 else ""
+	var source := str(args[3]) if args.size() > 3 else ""
+	var detail := str(args[4]) if args.size() > 4 else ""
+	if status == "error":
+		if _web_api != null and _load_attempt <= LOAD_RETRY_DELAYS.size():
+			# Busy disks and slow devices often answer on a second try.
+			get_tree().create_timer(LOAD_RETRY_DELAYS[_load_attempt - 1]).timeout.connect(_web_load)
+			_set_save_status("loading", "%d/%d" % [_load_attempt + 1, LOAD_RETRY_DELAYS.size() + 1])
+			return
+		# The save could not be read. It is NOT treated as empty: nothing is written until it can be.
+		_web_operation = ""
 		_save_blocked = true
 		_save_error = ERR_CANT_OPEN
-		_set_save_status("unavailable")
-	_legacy_save = {}
+		if not _offline:
+			_restore(_legacy_save if _valid_save_state(_legacy_save) else {})
+		_enter_choice("unavailable", detail)
+		world_replaced.emit()
+		changed.emit()
+		return
+	_web_operation = ""
+	_clear_protected()
+	_offline = false
+	_save_blocked = false
+	_save_error = OK
+	_migrated_from = ""
+	_dirty = false
+	_dirty_gameplay = false
+	match status:
+		"loaded", "migrate":
+			var parsed := Save.parse_game(text)
+			if not _valid_save_state(parsed):
+				_web_revision = revision
+				_protect(text, revision, source)
+				_restore({})
+			else:
+				_web_revision = revision
+				_restore(parsed)
+				if status == "migrate":
+					_migrated_from = source
+					_mark_dirty()
+				else:
+					_set_save_status("saved")
+		"invalid":
+			_web_revision = revision
+			_protect(text, revision, source)
+			_restore({})
+		_:
+			_web_revision = ""
+			if _legacy_present:
+				if _valid_save_state(_legacy_save):
+					_restore(_legacy_save)
+					_migrated_from = "user://" + Save.SAVE_PATH.get_file()
+					_mark_dirty()
+				else:
+					_protect(Save.read_raw(), "", "user://" + Save.SAVE_PATH.get_file())
+					_restore({})
+			elif _keep_session_if_missing:
+				_mark_dirty()
+			else:
+				_restore({})
+				_mark_dirty()
+	_keep_session_if_missing = false
+	# What is in memory now matches the store: walking alone waits a full interval before the next write.
+	_last_commit_at = _now()
+	if not is_protected():
+		_choice_pending = false
+		_set_save_status("pending" if _dirty else "saved")
 	world_replaced.emit()
 	changed.emit()
+
+func _on_page_hidden(_args: Array) -> void:
+	flush(true)
+
+func _on_persist(args: Array) -> void:
+	storage_persisted = str(args[0])
+	changed.emit()
+	save_status_changed.emit(save_status)
+
+# --- protected saves and recovery choices ---------------------------------------------------------------
+
+func _protect(raw: String, revision: String, source: String) -> void:
+	_protected_raw = raw
+	_protected_revision = revision
+	_protected_source = source
+	_protected_exported = false
+	var envelope: Variant = JSON.parse_string(raw) if not raw.is_empty() else null
+	var version: Variant = envelope.get("version") if envelope is Dictionary else null
+	_protected_reason = "future" if (version is int or version is float) and float(version) > Save.SAVE_VERSION else "corrupt"
+	_save_blocked = true
+	_save_error = ERR_FILE_CORRUPT
+	_enter_choice("protected", _protected_reason)
+
+func _clear_protected() -> void:
+	_protected_raw = ""
+	_protected_reason = ""
+	_protected_revision = ""
+	_protected_source = ""
+	_protected_exported = false
+
+func _enter_choice(status: String, detail := "") -> void:
+	_choice_pending = true
+	_set_save_status(status, detail)
+	changed.emit()
+
+func is_protected() -> bool:
+	return not _protected_source.is_empty()
+
+## What the save UI should offer now: {status, title, message, modal, actions: [{id, label, enabled}]}.
+func save_notice() -> Dictionary:
+	var notice := {"status": save_status, "title": "", "message": "", "modal": _choice_pending, "actions": []}
+	var actions: Array = notice.actions
+	match save_status:
+		"unavailable":
+			notice.title = "저장을 불러오지 못했어요"
+			notice.message = "브라우저 저장소가 응답하지 않아요(%s). 기존 저장은 그대로 두었고, 확인될 때까지 아무것도 덮어쓰지 않아요." % (save_detail if not save_detail.is_empty() else "원인 미상")
+			if _offline:
+				notice.message += " 지금 진행은 저장되지 않아요. 다시 시도해서 기존 저장을 찾으면 그 저장으로 바뀌니, 필요하면 먼저 내보내세요."
+			actions.append({"id": "retry", "label": "다시 시도", "enabled": true})
+			actions.append({"id": "export_current", "label": "현재 진행 내보내기", "enabled": true})
+			actions.append({"id": "offline", "label": "저장 없이 계속", "enabled": _choice_pending})
+		"other_tab":
+			notice.title = "다른 탭에서 게임이 열려 있어요"
+			notice.message = "저장이 섞이지 않도록 이 탭에서는 저장하지 않아요. 다른 탭을 닫은 뒤 다시 확인하세요. 둘러보기는 새 게임으로 열리고 저장되지 않아요."
+			actions.append({"id": "retry", "label": "다시 확인", "enabled": true})
+			actions.append({"id": "offline", "label": "저장 없이 둘러보기", "enabled": _choice_pending})
+		"conflict":
+			notice.title = "다른 곳에서 더 최근에 저장했어요"
+			notice.message = "이 탭의 진행은 저장되지 않았어요. 필요하면 내보낸 뒤 최신 저장을 불러오세요."
+			actions.append({"id": "export_current", "label": "이 탭 진행 내보내기", "enabled": true})
+			actions.append({"id": "retry", "label": "최신 저장 불러오기", "enabled": true})
+			actions.append({"id": "offline", "label": "저장 없이 계속", "enabled": _choice_pending})
+		"protected":
+			notice.title = "이 저장은 열 수 없어서 보호 중이에요"
+			notice.message = ("더 새로운 버전의 게임에서 만든 저장이에요." if _protected_reason == "future" else "저장 내용이 손상됐거나 형식이 달라요.") + \
+				" 원본은 그대로 있어요. 원본을 내보낸 뒤에만 보관 처리하고 새로 시작하거나 다른 저장을 가져올 수 있어요."
+			actions.append({"id": "export_raw", "label": "원본 저장 내보내기", "enabled": true})
+			actions.append({"id": "set_aside", "label": "원본 보관 후 새로 시작", "enabled": _protected_exported})
+			if OS.has_feature("web"):
+				actions.append({"id": "retry", "label": "다시 확인", "enabled": true})
+			actions.append({"id": "offline", "label": "저장 없이 둘러보기", "enabled": _choice_pending})
+		"failed", "quota":
+			notice.title = "저장 공간이 부족해요" if save_status == "quota" else "자동 저장에 실패했어요"
+			notice.message = "마지막으로 저장된 내용은 그대로예요. 잠시 뒤 자동으로 다시 시도해요. JSON 백업을 권해요."
+			actions.append({"id": "retry_save", "label": "지금 다시 저장", "enabled": true})
+			actions.append({"id": "export_current", "label": "현재 진행 내보내기", "enabled": true})
+	return notice
+
+## Runs a choice from save_notice(). Returns text to show for the export actions, "" otherwise.
+func save_action(id: String) -> String:
+	match id:
+		"retry":
+			if not OS.has_feature("web") or _web_api == null or not _web_operation.is_empty():
+				return ""
+			_keep_session_if_missing = _offline and _dirty_gameplay
+			_choice_pending = false
+			if save_status == "other_tab":
+				_claim()
+			else:
+				_load_attempt = 0
+				_web_load()
+		"offline":
+			_choice_pending = false
+			_offline = true
+			_save_blocked = true
+			changed.emit()
+			save_status_changed.emit(save_status)
+		"export_current":
+			return export_save()
+		"export_raw":
+			return export_protected()
+		"set_aside":
+			set_aside_protected({})
+		"retry_save":
+			_retry_at = 0.0
+			flush(true)
+		"persist":
+			if _web_api != null:
+				_web_api.persist(true, _web_callback(_on_persist))
+	return ""
+
+## The protected save exactly as stored. On the web it is also offered as a file download.
+func export_protected() -> String:
+	if not is_protected():
+		return ""
+	_protected_exported = true
+	if OS.has_feature("web") and not _protected_raw.is_empty():
+		var stamp := Time.get_datetime_string_from_system().replace(":", "-")
+		JavaScriptBridge.download_buffer(_protected_raw.to_utf8_buffer(), "mining-workshop-protected-%s.json" % stamp, "application/json")
+	changed.emit()
+	save_status_changed.emit(save_status)
+	return _protected_raw
+
+## Offers the current progress as a file download (web).
+func download_save() -> bool:
+	var text := export_save()
+	if text.is_empty() or not OS.has_feature("web"):
+		return false
+	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
+	JavaScriptBridge.download_buffer(text.to_utf8_buffer(), "mining-workshop-save-%s.json" % stamp, "application/json")
+	return true
+
+## Keeps the protected save (renamed on desktop, moved to a backup key on the web) and starts saving
+## `replacement` ({} = a new game) in its place. Requires the original to have been exported first.
+func set_aside_protected(replacement: Dictionary) -> bool:
+	if not is_protected():
+		return false
+	if not _protected_exported:
+		return _reject("먼저 원본 저장을 내보내 주세요. 원본은 그대로 보호하고 있어요.")
+	if not _web_operation.is_empty():
+		return _reject("저장 확인 중이에요. 잠시 후 다시 시도해 주세요.")
+	var old_state := state
+	var old_world := world
+	_restore(replacement)
+	var candidate := state
+	state = old_state
+	world = old_world
+	World.set_current(world)
+	if OS.has_feature("web") and persistence_enabled:
+		var backup := WEB_PROTECTED_BACKUP + (_protected_revision if not _protected_revision.is_empty() else Crypto.new().generate_random_bytes(8).hex_encode())
+		var expected := _protected_revision if _protected_source == "slot:main" else ""
+		_web_candidate = candidate
+		if _start_web_commit("set_aside", candidate, expected, {"overwriteInvalid": true, "backupKey": backup}):
+			return true
+		_enter_choice("protected", _protected_reason)
+		return false
+	var kept := Save.set_aside_protected()
+	if kept.is_empty():
+		return _reject("원본 저장을 보관하지 못해서 아무것도 바꾸지 않았어요.")
+	if persistence_enabled and Save.save_game(candidate) != OK:
+		_report_save_failure("write")
+		return _reject("원본은 %s 에 보관했지만 새 저장을 쓰지 못했어요." % kept[0].get_file())
+	_clear_protected()
+	_choice_pending = false
+	_offline = false
+	_save_blocked = false
+	_apply_import(candidate, "원본 저장을 %s 로 보관했어요." % kept[0].get_file())
+	return true
 
 func _restore(source: Dictionary) -> void:
 	state = {
@@ -458,121 +760,172 @@ func deliver(id: String) -> bool:
 func import_save(json_text: String) -> bool:
 	if not _web_operation.is_empty():
 		return _reject("저장 확인 중이에요. 잠시 후 다시 시도해 주세요.")
-	if _save_blocked:
-		return _reject("기존 저장을 보호하는 중이에요. 가져오기를 적용하지 않았어요.")
 	var imported := Save.parse_game(json_text)
 	if imported.is_empty():
 		imported = Save.import_legacy(json_text)
 	if imported.is_empty() or not _valid_save_state(imported):
 		return _reject("저장 JSON 형식이나 버전을 확인해 주세요.")
+	if is_protected():
+		# Replacing a protected save is only allowed after its original was exported, and keeps it.
+		if not _protected_exported:
+			return _reject("기존 저장을 보호하는 중이에요. 먼저 원본 저장을 내보내 주세요.")
+		return set_aside_protected(imported)
+	if _save_blocked and persistence_enabled:
+		return _reject("지금은 저장할 수 없어서 가져오기를 적용하지 않았어요. 저장 상태를 먼저 확인해 주세요.")
 	var old_state := state
 	var old_world := world
-	var old_dirty := _dirty
 	# Normalize the candidate with the same rules as an on-disk save.
 	_restore(imported)
 	var candidate := state
 	state = old_state
 	world = old_world
 	World.set_current(world)
-	_dirty = old_dirty
 	if persistence_enabled and OS.has_feature("web"):
 		_web_candidate = candidate
-		if not _start_web_commit("import", candidate):
-			_web_candidate = {}
-			return false
-		return true # Accepted for processing, not yet applied or confirmed.
+		# The replaced save is kept under WEB_IMPORT_BACKUP in the same transaction.
+		return _start_web_commit("import", candidate, _web_revision, {"backupKey": WEB_IMPORT_BACKUP})
 	if persistence_enabled and Save.save_game(candidate) != OK:
-		_set_save_status("failed")
-		return _reject("기존 저장을 보호하는 중이에요. 가져오기를 적용하지 않았어요.")
+		_report_save_failure("write")
+		return _reject("가져온 데이터를 저장하지 못해서 적용하지 않았어요. 기존 저장은 그대로예요.")
 	_apply_import(candidate)
 	return true
 
-func _apply_import(candidate: Dictionary) -> void:
+func _apply_import(candidate: Dictionary, message := "저장 불러오기 완료") -> void:
 	_restore(candidate)
 	_dirty = false
+	_dirty_gameplay = false
 	if persistence_enabled:
-		_set_save_status("saved")
+		_set_save_status(_saved_status())
 	world_replaced.emit()
 	changed.emit()
-	feedback.emit("저장 불러오기 완료")
+	feedback.emit(message)
 
 func export_save() -> String:
 	_record_world()
 	_record_position()
 	return Save.export_game(state)
 
-func _start_web_commit(operation: String, payload: Dictionary) -> bool:
+func _saved_status() -> String:
+	return "saved_basic" if save_durability == "basic" else "saved"
+
+func _start_web_commit(operation: String, payload: Dictionary, expected: String, options := {}) -> bool:
 	var text := Save.export_game(payload)
 	if text.is_empty() or _web_api == null:
-		_report_save_failure()
+		_web_candidate = {}
+		_report_save_failure("export" if text.is_empty() else "no-api")
 		return false
 	_web_operation = operation
-	if operation == "import":
+	if operation in ["import", "set_aside"]:
 		_set_save_status("importing")
-	elif save_status != "failed":
+	elif save_status not in ["failed", "quota"]:
 		_set_save_status("saving")
+	if not _migrated_from.is_empty():
+		options["migratedFrom"] = _migrated_from
 	var revision := Crypto.new().generate_random_bytes(16).hex_encode()
-	_web_api.commit(OS.get_user_data_dir(), _web_revision, revision, text, _web_callback)
+	_web_api.commit(expected, revision, text, JSON.stringify(options), _web_callback(_on_web_commit))
 	return true
 
-func _finish_web_operation(args: Array) -> void:
+func _on_web_commit(args: Array) -> void:
 	var operation := _web_operation
-	if operation == "loading":
-		_finish_web_load(args)
-		return
-	if operation not in ["autosave", "import"]:
+	if operation not in ["autosave", "import", "set_aside"]:
 		return
 	_web_operation = ""
 	var status := str(args[0])
 	var candidate := _web_candidate
 	_web_candidate = {}
-	if status != "saved":
+	if status == "saved":
+		_web_revision = str(args[1])
+		save_durability = "strict" if str(args[2]) == "strict" else "basic"
+		_save_error = OK
+		_retry_count = 0
+		_retry_at = 0.0
+		_last_commit_at = _now()
+		_migrated_from = ""
+		if operation == "import":
+			_apply_import(candidate)
+		elif operation == "set_aside":
+			_clear_protected()
+			_choice_pending = false
+			_offline = false
+			_save_blocked = false
+			_apply_import(candidate, "원본 저장은 브라우저에 따로 보관했어요. 새 저장을 시작했어요.")
+		else:
+			_record_position()
+			_set_save_status("pending" if _dirty else _saved_status())
+	else:
 		if operation == "autosave":
 			_dirty = true
-		if status == "conflict":
-			_save_blocked = true
-			_save_error = ERR_BUSY
-			_set_save_status("conflict")
-			feedback.emit("다른 탭에서 저장했어요. JSON을 백업한 뒤 새로고침해 주세요.")
-		else:
-			_report_save_failure()
-			if operation == "import":
-				feedback.emit("가져온 데이터가 저장되지 않아 적용하지 않았어요.")
-		return
-	_web_revision = str(args[2])
-	_save_error = OK
-	if operation == "import":
-		_apply_import(candidate)
-	else:
-		_record_position()
-		_set_save_status("pending" if _dirty else "saved")
+			_dirty_gameplay = _dirty_gameplay or bool(_web_candidate_gameplay)
+		match status:
+			"conflict":
+				_save_blocked = true
+				_save_error = ERR_BUSY
+				_enter_choice("conflict")
+				if operation == "set_aside":
+					# Something else changed the slot: keep protecting what we saw.
+					_set_save_status("conflict")
+			"quota":
+				_report_save_failure("quota", str(args[3]) if args.size() > 3 else "")
+			_:
+				_report_save_failure("write", str(args[3]) if args.size() > 3 else "")
+		if operation in ["import", "set_aside"]:
+			feedback.emit("가져온 데이터가 저장되지 않아 적용하지 않았어요. 기존 저장은 그대로예요.")
+			if operation == "set_aside" and status != "conflict":
+				_enter_choice("protected", _protected_reason)
+	_web_candidate_gameplay = false
+	if _flush_after_operation:
+		_flush_after_operation = false
+		flush(true)
 
-func _report_save_failure() -> void:
+
+## Failed writes are retried later with a growing pause; the last saved record stays as it was.
+func _report_save_failure(kind: String, detail := "") -> void:
 	if _save_error == OK:
-		feedback.emit("자동 저장에 실패했어요. 저장 탭에서 JSON을 백업할 수 있어요.")
-	_save_error = ERR_FILE_CANT_WRITE
-	_set_save_status("failed")
+		feedback.emit("저장 공간이 부족해요. 저장 탭에서 JSON을 백업해 주세요." if kind == "quota" else "자동 저장에 실패했어요. 저장 탭에서 JSON을 백업할 수 있어요.")
+	_save_error = ERR_OUT_OF_MEMORY if kind == "quota" else ERR_FILE_CANT_WRITE
+	var delays: Array = QUOTA_RETRY_DELAYS if kind == "quota" else FAILURE_RETRY_DELAYS
+	_retry_at = _now() + float(delays[mini(_retry_count, delays.size() - 1)])
+	_retry_count += 1
+	_set_save_status("quota" if kind == "quota" else "failed", detail)
 
-func flush() -> void:
-	if not persistence_enabled or _save_blocked or not _web_operation.is_empty() or data.is_empty():
+## Saves when something changed. Walking alone is saved at most every POSITION_SAVE_INTERVAL seconds;
+## `force` (page hidden, window closing, the retry button) saves now.
+func flush(force := false) -> void:
+	if not persistence_enabled or data.is_empty() or _save_blocked or _choice_pending:
+		return
+	if not _web_operation.is_empty():
+		if force:
+			_flush_after_operation = true
 		return
 	_record_world()
 	_record_position()
 	if not _dirty:
 		return
+	var now := _now()
+	if not force and now < _retry_at:
+		return
+	if not force and not _dirty_gameplay and now - _last_commit_at < POSITION_SAVE_INTERVAL:
+		return
 	if OS.has_feature("web"):
-		# New changes made during this transaction get their own snapshot.
+		# Changes made while this transaction runs get their own snapshot.
+		_web_candidate_gameplay = _dirty_gameplay
 		_dirty = false
-		if not _start_web_commit("autosave", state):
+		_dirty_gameplay = false
+		if not _start_web_commit("autosave", state, _web_revision):
 			_dirty = true
+			_dirty_gameplay = _web_candidate_gameplay
 		return
 	var result := Save.save_game(state)
 	if result == OK:
 		_save_error = OK
+		_retry_count = 0
+		_retry_at = 0.0
 		_dirty = false
+		_dirty_gameplay = false
+		_last_commit_at = now
 		_set_save_status("saved")
 	else:
-		_report_save_failure()
+		_report_save_failure("write", error_string(result))
 
 func _process(delta: float) -> void:
 	if input_frozen():
@@ -586,7 +939,7 @@ func _process(delta: float) -> void:
 		mutated = _tick() or mutated
 	if mutated:
 		_updated()
-	if _save_elapsed >= 2.0:
+	if _save_elapsed >= AUTOSAVE_INTERVAL:
 		_save_elapsed = 0.0
 		flush()
 
@@ -701,7 +1054,7 @@ func _record_position() -> void:
 	var value := {"scene": get_tree().current_scene.scene_file_path, "x": player.position.x, "y": player.position.y}
 	if state.position != value:
 		state.position = value
-		_mark_dirty()
+		_mark_dirty(true)
 
 func _pay(cost: Dictionary) -> bool:
 	var gold := float(cost.get("gold", 0))
