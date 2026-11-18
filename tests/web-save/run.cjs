@@ -297,8 +297,13 @@ async function runCase(browser, origin, [name, run], mobile = false, needsFixtur
   try {
     const baseline = needsFixture ? await prepare(page, origin) : null;
     await run({ page, context, origin, baseline, mobile, viewport, shot, note: details => entry.checks.push(details) });
-    const errors = entry.console.filter(c => ['error', 'pageerror'].includes(c.type));
-    assert.ok(errors.length === 0, 'Browser errors: ' + JSON.stringify(errors));
+    // Software-rendered WebGL in headless WebKit/Firefox reports renderer warnings as console errors
+    // ("WebGL: INVALID_OPERATION: glBlitFramebuffer ..."). They are counted, not failed; every other
+    // console error or page error fails the case.
+    const renderer = entry.console.filter(c => c.type === 'error' && /^WebGL: /.test(c.text));
+    if (renderer.length) entry.checks.push({ webglRendererWarnings: renderer.length });
+    const errors = entry.console.filter(c => (c.type === 'error' && !/^WebGL: /.test(c.text)) || c.type === 'pageerror');
+    assert.ok(errors.length === 0, 'Browser errors: ' + JSON.stringify(errors.slice(0, 5)));
     entry.status = 'PASS';
   } catch (error) {
     entry.status = 'FAIL';
@@ -306,6 +311,12 @@ async function runCase(browser, origin, [name, run], mobile = false, needsFixtur
     entry.saveStatus = await currentStatus(page).catch(() => null);
     entry.position = await pos(page).catch(() => null);
     entry.writes = await page.evaluate(() => window.qaWrites).catch(() => null);
+    entry.openAttempts = await page.evaluate(() => window.qaOpenAttempts).catch(() => null);
+    entry.saveModule = await page.evaluate(() => window.miningWorkshopSave?.state).catch(() => null);
+    // Artifacts may not be reachable from where results are read: put the facts in the log too.
+    console.log('  diagnostics', JSON.stringify({ status: entry.saveStatus, position: entry.position,
+      writes: entry.writes, openAttempts: entry.openAttempts, module: entry.saveModule,
+      lastConsole: entry.console.filter(c => !/^WebGL: /.test(c.text)).slice(-6) }));
     await shot('failure').catch(() => {});
   } finally {
     console.log(id, entry.status, entry.failure || '', entry.checks.length ? JSON.stringify(entry.checks) : '');
