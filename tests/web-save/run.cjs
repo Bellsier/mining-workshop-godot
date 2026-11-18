@@ -91,7 +91,9 @@ function installFaults(options) {
       const until = performance.now() + fault.delays[quantity];
       delete fault.delays[quantity];
       const hold = () => {
-        if (performance.now() < until && !fault.released[quantity]) this.get(key).onsuccess = hold;
+        if (performance.now() >= until || fault.released[quantity]) return;
+        // Once the game aborts the transaction (its timeout), stop holding it instead of throwing.
+        try { this.get(key).onsuccess = hold; } catch { /* transaction finished */ }
       };
       hold();
     }

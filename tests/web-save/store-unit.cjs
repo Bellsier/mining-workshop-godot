@@ -67,7 +67,10 @@ function pageHelpers() {
         if (key === 'slot:main') {
           IDBObjectStore.prototype.put = put;
           const until = performance.now() + ms;
-          const spin = () => { if (performance.now() < until) this.get('slot:main').onsuccess = spin; };
+          const spin = () => {
+            if (performance.now() >= until) return;
+            try { this.get('slot:main').onsuccess = spin; } catch { /* aborted by the module's timeout */ }
+          };
           spin();
         }
         return request;
