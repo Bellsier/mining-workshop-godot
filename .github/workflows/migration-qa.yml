@@ -4,7 +4,7 @@ on:
   push:
     branches: [codex/godot-migration]
   pull_request:
-    branches: [main]
+    branches: [main, codex/godot-world-integration]
 
 permissions:
   contents: read
@@ -38,6 +38,13 @@ jobs:
           godot --headless --path . --fixed-fps 60 -- --route-test 2>&1 | tee "$RUNNER_TEMP/route.log"
           grep -F 'ROUTE PASS' "$RUNNER_TEMP/route.log"
           ! grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$RUNNER_TEMP/"{gameplay,save,route}.log
+      - name: Verify tunnel construction conditions for visual QA
+        shell: bash
+        run: |
+          set -o pipefail
+          godot --headless --path . --script res://tools/world_integration_test.gd 2>&1 | tee "$RUNNER_TEMP/construction.log"
+          grep -F 'WORLD INTEGRATION PASS' "$RUNNER_TEMP/construction.log"
+          ! grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$RUNNER_TEMP/construction.log"
       - name: Build private Web preview
         shell: bash
         run: |
@@ -55,3 +62,82 @@ jobs:
           name: mining-workshop-godot-web
           path: ${{ runner.temp }}/web
           retention-days: 7
+
+  visual:
+    name: Visual QA (Chromium)
+    needs: godot
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      VISUAL_QA_SHA: ${{ github.sha }}
+      VISUAL_QA_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      VISUAL_QA_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Prepare report directory
+        run: |
+          mkdir -p "$RUNNER_TEMP/visual-results"
+          printf 'VISUAL_QA_OUTPUT=%s\nVISUAL_QA_WEB=%s\n' \
+            "$RUNNER_TEMP/visual-results" "$RUNNER_TEMP/visual-web" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        if: needs.godot.result == 'success'
+      - uses: actions/setup-node@v4
+        if: needs.godot.result == 'success'
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tests/visual/package-lock.json
+      - uses: actions/download-artifact@v4
+        if: needs.godot.result == 'success'
+        with:
+          name: mining-workshop-godot-web
+          path: ${{ env.VISUAL_QA_WEB }}
+      - name: Install Playwright Chromium
+        if: needs.godot.result == 'success'
+        working-directory: tests/visual
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Capture visual QA scenarios
+        id: capture
+        if: needs.godot.result == 'success'
+        working-directory: tests/visual
+        env:
+          VISUAL_QA_CONSTRUCTION: PASS
+        shell: bash
+        run: npm test 2>&1 | tee "$VISUAL_QA_OUTPUT/runner.log"
+      - name: Preserve setup failure report
+        if: always()
+        env:
+          BUILD_RESULT: ${{ needs.godot.result }}
+          CAPTURE_RESULT: ${{ steps.capture.outcome }}
+        run: |
+          if [ ! -s "$VISUAL_QA_OUTPUT/result.json" ]; then
+            mkdir -p "$VISUAL_QA_OUTPUT"
+            printf '{"status":"NOT RUN","commit":"%s","build":"%s","captureStep":"%s","cases":[]}\n' \
+              "$VISUAL_QA_SHA" "$BUILD_RESULT" "$CAPTURE_RESULT" > "$VISUAL_QA_OUTPUT/result.json"
+            printf '# 시각 QA 미실행\n\n- 커밋 %s\n- Godot 작업 %s\n- 브라우저 작업 %s\n- [GitHub Actions 설정·빌드 로그](%s)\n' \
+              "$VISUAL_QA_SHA" "$BUILD_RESULT" "$CAPTURE_RESULT" "$VISUAL_QA_RUN_URL" > "$VISUAL_QA_OUTPUT/report.md"
+            printf 'Browser did not start. See workflow job logs.\n' > "$VISUAL_QA_OUTPUT/browser.log"
+          fi
+      - name: Upload screenshots, results and logs
+        id: screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: godot-visual-qa
+          path: ${{ env.VISUAL_QA_OUTPUT }}
+          if-no-files-found: error
+          retention-days: 30
+      - name: Add QA report to run summary
+        if: always()
+        env:
+          ARTIFACT_URL: ${{ steps.screenshots.outputs.artifact-url }}
+        run: |
+          {
+            printf '## 시각 QA 산출물\n\n'
+            if [ -n "$ARTIFACT_URL" ]; then
+              printf '[godot-visual-qa ZIP](%s)\n\n' "$ARTIFACT_URL"
+            fi
+            sed '/^### /,$d' "$VISUAL_QA_OUTPUT/report.md"
+          } >> "$GITHUB_STEP_SUMMARY"
