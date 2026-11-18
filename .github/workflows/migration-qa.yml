@@ -22,6 +22,9 @@ jobs:
       image: mcr.microsoft.com/playwright:v1.56.1-noble
       options: --ipc=host
     timeout-minutes: 25
+    env:
+      # Firefox refuses to start as root when $HOME belongs to another user (Playwright container note).
+      HOME: /root
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
