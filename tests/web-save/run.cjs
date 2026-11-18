@@ -475,7 +475,7 @@ async function main() {
       'webgl.force-enabled': true, 'webgl.disabled': false, 'webgl.enable-webgl2': true, 'gfx.webrender.software': true,
     } : undefined;
     browser = await type.launch({ executablePath: engine === 'chromium' ? process.env.SAVE_QA_CHROMIUM : undefined,
-      headless: true, args, firefoxUserPrefs });
+      headless: process.env.SAVE_QA_HEADED !== '1', args, firefoxUserPrefs });
     results.browser = browser.version();
     // Firefox has no mobile emulation in Playwright; the mobile pass runs in Chromium and WebKit.
     const mobiles = engine === 'firefox' ? [false] : [false, true];

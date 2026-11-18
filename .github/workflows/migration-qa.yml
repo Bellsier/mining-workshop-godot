@@ -39,7 +39,7 @@ jobs:
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            libgl1-mesa-dri libegl1 libegl-mesa0 libglx-mesa0 libgles2 > /dev/null
+            libgl1-mesa-dri libegl1 libegl-mesa0 libglx-mesa0 libgles2 xvfb xauth > /dev/null
       - name: Install save QA dependencies
         working-directory: tests/web-save
         run: npm ci
@@ -56,7 +56,14 @@ jobs:
           SAVE_QA_BROWSER: ${{ matrix.browser }}
           SAVE_QA_WEB: ${{ runner.temp }}/save-qa-web
           SAVE_QA_OUTPUT: ${{ runner.temp }}/save-qa-results
-        run: node run.cjs
+        # Headless Firefox finds no GL driver even with Mesa installed; a headed Firefox on a virtual X
+        # display uses Mesa's software GL (llvmpipe). Chromium and WebKit run headless as before.
+        run: |
+          if [ "$SAVE_QA_BROWSER" = firefox ]; then
+            SAVE_QA_HEADED=1 xvfb-run -a -s "-screen 0 1280x800x24" node run.cjs
+          else
+            node run.cjs
+          fi
       - name: Keep browser save evidence
         if: always()
         uses: actions/upload-artifact@v4
