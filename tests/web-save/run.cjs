@@ -56,10 +56,11 @@ function installFaults(options) {
     return transaction.call(this, stores, mode, txOptions);
   };
   if (options?.failOpen && location.pathname !== '/__qa_fixture') {
-    const open = indexedDB.open.bind(indexedDB);
+    // Patch the prototype: WebKit ignores an own-property override made this early on the factory.
+    const open = IDBFactory.prototype.open;
     window.qaOpenAttempts = 0;
-    indexedDB.open = function (name, version) {
-      if (name !== 'mining-workshop-godot') return open(name, version);
+    IDBFactory.prototype.open = function (name, version) {
+      if (name !== 'mining-workshop-godot') return open.call(this, name, version);
       window.qaOpenAttempts++;
       const fake = { error: new DOMException('qa open failure', 'UnknownError') };
       setTimeout(() => fake.onerror?.(new Event('error')), 20);
@@ -403,7 +404,10 @@ async function s2Import({ page, baseline, note, shot }) {
   await page.mouse.click(200, 240);
   // Supply the clipboard only in this browser context. Godot handles Ctrl+V
   // and validates the resulting text through the real import button.
-  await page.evaluate(text => {
+  if (engine !== 'chromium') {
+    // Clipboard emulation does not reach Godot's text field outside Chromium: type the JSON instead.
+    await page.keyboard.type(json, { delay: 5 });
+  } else await page.evaluate(text => {
     Object.defineProperty(navigator.clipboard, 'readText', { value: () => Promise.resolve(text) });
     window.addEventListener('paste', event => {
       if (event.isTrusted) {
@@ -415,7 +419,7 @@ async function s2Import({ page, baseline, note, shot }) {
     clipboardData.setData('text/plain', text);
     window.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
   }, json);
-  await page.keyboard.press('Control+v');
+  if (engine === 'chromium') await page.keyboard.press('Control+v');
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const importButton = () => page.mouse.click(85, 392);
   await inject(page, { targets: [7], fail: 1 });
