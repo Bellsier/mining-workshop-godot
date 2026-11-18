@@ -464,7 +464,13 @@ async function main() {
     const type = playwright[engine];
     assert.ok(type, 'Unknown browser ' + engine);
     const args = engine === 'chromium' ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : [];
-    browser = await type.launch({ executablePath: engine === 'chromium' ? process.env.SAVE_QA_CHROMIUM : undefined, headless: true, args });
+    // CI containers have no GPU: Firefox blocklists WebGL2 there ("AllowWebgl2:false") and Godot cannot
+    // start. Force its software WebGL path, as the Chromium job forces SwiftShader.
+    const firefoxUserPrefs = engine === 'firefox' ? {
+      'webgl.force-enabled': true, 'webgl.disabled': false, 'webgl.enable-webgl2': true, 'gfx.webrender.software': true,
+    } : undefined;
+    browser = await type.launch({ executablePath: engine === 'chromium' ? process.env.SAVE_QA_CHROMIUM : undefined,
+      headless: true, args, firefoxUserPrefs });
     results.browser = browser.version();
     // Firefox has no mobile emulation in Playwright; the mobile pass runs in Chromium and WebKit.
     const mobiles = engine === 'firefox' ? [false] : [false, true];
