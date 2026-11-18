@@ -8,6 +8,10 @@ const WEB_SAVE_VERSION := 1
 static var _save_lock := Mutex.new()
 
 
+static func has_file() -> bool:
+	return FileAccess.file_exists(_existing_path(SAVE_PATH))
+
+
 static func load_game() -> Dictionary:
 	return _load_game(_existing_path(SAVE_PATH))
 

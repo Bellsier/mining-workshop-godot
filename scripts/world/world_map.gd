@@ -180,7 +180,7 @@ func _scenery() -> Array:
 # --- play -----------------------------------------------------------------------------------------------
 
 func _physics_process(delta: float) -> void:
-	if player == null or get_node("/root/Game").workshop_is_open():
+	if player == null or get_node("/root/Game").world_input_blocked():
 		return
 	var at := to_units(player.position)
 	_fill_seeded_near(at)
@@ -203,7 +203,7 @@ func _physics_process(delta: float) -> void:
 ## Mines the vein the player stands at through the workshop economy, when the game has one
 ## (Game.workshop.mine(resource)). Returns true when something was mined.
 func mine_near_vein() -> bool:
-	if _near_vein.is_empty() or get_node("/root/Game").workshop_is_open():
+	if _near_vein.is_empty() or get_node("/root/Game").world_input_blocked():
 		return false
 	var game := get_node_or_null("/root/Game")
 	var economy: Variant = game.get("workshop") if game != null else null

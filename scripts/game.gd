@@ -78,7 +78,7 @@ func bind_level(level: Node2D, player: Node2D) -> void:
 			player.position = Vector2(x, y)
 
 func _process(_delta: float) -> void:
-	if _hud == null or not is_instance_valid(workshop.player):
+	if _hud == null or not is_instance_valid(workshop.player) or workshop.input_frozen():
 		return
 	var next: String = _world.context_at(workshop.player.position) if is_instance_valid(_world) else ""
 	var action: String = _world.action_label(next) if is_instance_valid(_world) else ""
@@ -97,6 +97,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 
 func _interact() -> void:
+	if workshop.input_frozen():
+		return
 	if _context == "workshop":
 		_hud.open_workshop()
 	elif not _context.is_empty() and not workshop_is_open():
@@ -107,6 +109,9 @@ func _interact() -> void:
 
 func workshop_is_open() -> bool:
 	return _hud != null and _hud.is_workshop_open()
+
+func world_input_blocked() -> bool:
+	return workshop_is_open() or (is_instance_valid(workshop) and workshop.input_frozen())
 
 func _notification(what: int) -> void:
 	if is_instance_valid(workshop) and what in [NOTIFICATION_WM_CLOSE_REQUEST, NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]:
@@ -126,7 +131,10 @@ func report(scene_name: String, pos: Vector2, facing: String) -> void:
 	_web_window.__trial_x = pos.x
 	_web_window.__trial_y = pos.y
 	_web_window.__trial_facing = facing
+	if is_instance_valid(workshop):
+		_web_window.__trial_save_status = workshop.save_status
 
 func _reload_world() -> void:
+	workshop.player = null
 	_restoring_position = true
 	go("res://scenes/world/world_map.tscn", "Start")

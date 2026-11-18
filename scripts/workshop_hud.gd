@@ -20,6 +20,8 @@ var _context_hint_text := ""
 var _overlay: ColorRect
 var _title: Label
 var _panel_gold: Label
+var _save_indicator: Label
+var _panel_save_indicator: Label
 var _panel_note: Label
 var _tabs: HBoxContainer
 var _tab_buttons: Array[Button] = []
@@ -41,9 +43,12 @@ func setup(workshop: Node) -> void:
 	if is_instance_valid(_workshop):
 		_workshop.disconnect("changed", _schedule_refresh)
 		_workshop.disconnect("feedback", _show_feedback)
+		_workshop.disconnect("save_status_changed", _show_save_status)
 	_workshop = workshop
 	_workshop.connect("changed", _schedule_refresh)
 	_workshop.connect("feedback", _show_feedback)
+	_workshop.connect("save_status_changed", _show_save_status)
+	_show_save_status(_workshop.save_status)
 	if is_node_ready():
 		_refresh()
 
@@ -79,6 +84,7 @@ func close_workshop() -> void:
 		return
 	_overlay.hide()
 	_bar.show()
+	_save_indicator.show()
 	_action.visible = not _action_label.is_empty()
 	_context_hint.visible = not _context_hint_text.is_empty()
 
@@ -99,6 +105,8 @@ func set_context_hint(message: String) -> void:
 		_context_hint.visible = not message.is_empty() and not is_workshop_open()
 
 func _unhandled_key_input(event: InputEvent) -> void:
+	if not is_instance_valid(_workshop) or _workshop.input_frozen():
+		return
 	var key := event as InputEventKey
 	if key == null or not key.pressed or key.echo:
 		return
@@ -114,7 +122,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 func _open(only_inventory: bool) -> void:
-	if not is_node_ready() or not is_instance_valid(_workshop):
+	if not is_node_ready() or not is_instance_valid(_workshop) or _workshop.input_frozen():
 		return
 	_active_tab = TAB_INVENTORY
 	_title.text = "가방" if only_inventory else "공방"
@@ -122,6 +130,7 @@ func _open(only_inventory: bool) -> void:
 	for index in range(_tab_buttons.size()):
 		_tab_buttons[index].visible = not only_inventory or index in [TAB_INVENTORY, TAB_SAVE]
 	_bar.hide()
+	_save_indicator.hide()
 	_action.hide()
 	_context_hint.hide()
 	_toast.hide()
@@ -131,6 +140,15 @@ func _open(only_inventory: bool) -> void:
 	_refresh(true)
 
 func _build_bar(surface: Control) -> void:
+	_save_indicator = _label("", 9)
+	_save_indicator.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_save_indicator.add_theme_color_override("font_outline_color", Color("211c18"))
+	_save_indicator.add_theme_constant_override("outline_size", 3)
+	surface.add_child(_save_indicator)
+	_save_indicator.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	_save_indicator.offset_left = -132
+	_save_indicator.offset_right = -5
+	_save_indicator.offset_top = 4
 	_bar = PanelContainer.new()
 	surface.add_child(_bar)
 	_bar.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
@@ -190,6 +208,8 @@ func _build_overlay(surface: Control) -> void:
 	_title = _label("공방", 15)
 	_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(_title)
+	_panel_save_indicator = _label("", 9)
+	header.add_child(_panel_save_indicator)
 	_panel_gold = _label("", 11)
 	_panel_gold.add_theme_color_override("font_color", Color("f1c577"))
 	header.add_child(_panel_gold)
@@ -658,6 +678,22 @@ func _add_row(title: String, details: String, action := "", method := "", id := 
 
 func _perform(method: String, id: String) -> void:
 	_workshop.call(method, id)
+
+func _show_save_status(status: String) -> void:
+	if not is_instance_valid(_save_indicator):
+		return
+	var label: String = {
+		"loading": "저장 불러오는 중", "pending": "자동 저장 대기", "saving": "자동 저장 중",
+		"importing": "가져온 데이터 저장 중", "saved": "자동 저장 완료",
+		"failed": "저장 실패 · JSON 백업", "conflict": "다른 탭 저장 · 백업 필요",
+		"protected": "기존 저장 보호 중", "unavailable": "저장 확인 불가",
+	}.get(status, "")
+	var attention := status in ["failed", "conflict", "protected", "unavailable"]
+	for indicator in [_save_indicator, _panel_save_indicator]:
+		indicator.text = label
+		indicator.add_theme_color_override("font_color", Color("ffc18c") if attention else PAPER)
+	# Keep the import UI and its draft visible until the transaction answers.
+	_overlay.process_mode = Node.PROCESS_MODE_DISABLED if status == "importing" else Node.PROCESS_MODE_INHERIT
 
 func _show_feedback(message: String) -> void:
 	if not is_node_ready():

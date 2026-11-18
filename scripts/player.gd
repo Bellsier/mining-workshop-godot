@@ -7,7 +7,7 @@ var facing := "down"
 
 func _physics_process(_delta: float) -> void:
 	var game := get_node("/root/Game")
-	var dir := Vector2.ZERO if game.workshop_is_open() else Input.get_vector("move_left", "move_right", "move_up", "move_down")
+	var dir := Vector2.ZERO if game.world_input_blocked() else Input.get_vector("move_left", "move_right", "move_up", "move_down")
 	velocity = dir * speed
 	move_and_slide()
 	if dir.length() > 0.01:

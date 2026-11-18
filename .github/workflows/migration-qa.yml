@@ -10,6 +10,37 @@ permissions:
   contents: read
 
 jobs:
+  web-save:
+    name: Web save durability (Chromium)
+    needs: godot
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright:v1.56.1-noble
+      options: --ipc=host
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mining-workshop-godot-web
+          path: ${{ runner.temp }}/save-qa-web
+      - name: Install save QA dependencies
+        working-directory: tests/web-save
+        run: npm ci
+      - name: Check delayed, rejected and interrupted saves
+        working-directory: tests/web-save
+        env:
+          SAVE_QA_WEB: ${{ runner.temp }}/save-qa-web
+          SAVE_QA_OUTPUT: ${{ runner.temp }}/save-qa-results
+        run: npm test
+      - name: Keep browser save evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: godot-web-save-qa
+          path: ${{ runner.temp }}/save-qa-results
+          retention-days: 30
+
   godot:
     runs-on: ubuntu-latest
     timeout-minutes: 10
