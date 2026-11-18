@@ -90,8 +90,12 @@ func _protected_future_save() -> void:
 	_check(Save.parse_game(FileAccess.get_file_as_string(Save.SAVE_PATH)).has("inventory"), "a new readable save replaced it")
 	_check(g.save_status == "saved" and not g.input_frozen(), "saving goes on after the choice: %s" % g.save_status)
 	g.free()
+	var written: Dictionary = Save.load_game()
 	var again := _game()
-	_check(again.save_status == "saved" and not again.is_protected(), "the new save loads normally")
+	# A loaded save may be normalized and written again ("pending"); it must not be protected or frozen.
+	_check(again.save_status in ["saved", "pending"] and not again.is_protected() and not again.input_frozen(),
+		"the new save loads normally: %s" % again.save_status)
+	_check(float(again.state.gold) == float(written.get("gold", -1)), "the new save's values are restored")
 	again.free()
 
 func _protected_corrupt_save_import() -> void:

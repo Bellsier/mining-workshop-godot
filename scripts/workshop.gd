@@ -265,7 +265,8 @@ func _protect(raw: String, revision: String, source: String) -> void:
 	_protected_revision = revision
 	_protected_source = source
 	_protected_exported = false
-	var envelope: Variant = JSON.parse_string(raw) if not raw.is_empty() else null
+	var parser := JSON.new()
+	var envelope: Variant = parser.data if not raw.is_empty() and parser.parse(raw) == OK else null
 	var version: Variant = envelope.get("version") if envelope is Dictionary else null
 	_protected_reason = "future" if (version is int or version is float) and float(version) > Save.SAVE_VERSION else "corrupt"
 	_save_blocked = true
