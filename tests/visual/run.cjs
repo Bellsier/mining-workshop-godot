@@ -108,9 +108,13 @@ async function closedTunnel({ page, shot, details, origin }) {
   const stop = await position(page);
   assert.ok(stop.x > -300 && stop.x < -270, 'Expected collision at the closed tunnel');
   await holdKey(page, 'a', () => delay(800));
-  assert.deepEqual(await position(page), stop, 'Closed tunnel must still block input');
+  const continued = await position(page);
+  const displacement = Math.hypot(continued.x - stop.x, continued.y - stop.y);
+  assert.equal(continued.scene, 'WorldMap');
+  assert.ok(continued.x > -300 && continued.x < -270 && displacement < 0.05,
+    'Closed tunnel must still block input: ' + JSON.stringify({ stop, continued, displacement }));
   assert.equal((await readSave(page)).world.tunnelUnlocked, false);
-  details.closedGate = stop;
+  details.closedGate = { stop, continued, displacement };
   await shot('tunnel-closed');
 }
 
