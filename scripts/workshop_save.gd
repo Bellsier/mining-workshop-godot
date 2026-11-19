@@ -18,6 +18,9 @@ static var _save_lock := Mutex.new()
 static var _original_key := ""
 static var _original_result := {}
 static var _base64: RegEx
+## SHA-256 of the save file as this game last wrote or read it valid. A write over that same file skips
+## parsing it again (a large save took most of a write to re-read); any other file is parsed first.
+static var _known_good_sha256 := ""
 
 
 static func has_file() -> bool:
@@ -69,7 +72,7 @@ static func save_game(state: Dictionary) -> Error:
 
 
 static func export_game(state: Dictionary) -> String:
-	if state.is_empty() or not _is_json_value(state):
+	if state.is_empty():
 		return ""
 	var stored := state
 	# The parsed copy of an imported web save is rebuilt from its original bytes on every read. It is
@@ -78,11 +81,25 @@ static func export_game(state: Dictionary) -> String:
 	if original.status == "ok" and state.get("legacy_web_save") == original.payload:
 		stored = state.duplicate()
 		stored.erase("legacy_web_save")
+	# Only what is written is checked (the copy set aside equals JSON just parsed from the original).
+	if not _is_json_value(stored):
+		return ""
 	return ExactJson.stringify({"version": SAVE_VERSION, "state": stored})
 
 
 static func parse_game(text: String) -> Dictionary:
-	var envelope := _parse_object(text)
+	return _game_from(_parse_object(text))
+
+
+## A pasted or chosen save: a Godot save, else a web save converted by import_legacy; {} if neither.
+## The text is parsed once (a large web save took most of an import to parse three times).
+static func import_text(text: String, bytes := PackedByteArray(), origin := "paste") -> Dictionary:
+	var value := _parse_object(text)
+	var state := _game_from(value)
+	return state if not state.is_empty() else _import_web(_web_payload(value), text, bytes, origin)
+
+
+static func _game_from(envelope: Dictionary) -> Dictionary:
 	if not _is_version(envelope.get("version"), SAVE_VERSION):
 		return {}
 	var state: Variant = envelope.get("state")
@@ -175,7 +192,11 @@ static func utf8_text(bytes: PackedByteArray) -> String:
 
 ## The game payload of a web save text (v1 payload, S2 snapshot or snapshot row); {} if it is not one.
 static func legacy_payload(text: String) -> Dictionary:
-	var payload: Variant = _parse_object(text)
+	return _web_payload(_parse_object(text))
+
+
+static func _web_payload(value: Dictionary) -> Dictionary:
+	var payload: Variant = value
 	if payload.has("snapshot") and not payload.has("saveVersion"):
 		payload = payload["snapshot"]
 	if payload is Dictionary and payload.has("payload") and not payload.has("saveVersion"):
@@ -193,9 +214,12 @@ static func legacy_payload(text: String) -> Dictionary:
 ## `bytes` are the file's bytes for a file import; pasted text is kept as its UTF-8 bytes, which may
 ## already differ from the file it was copied from (line endings, for one).
 static func import_legacy(text: String, bytes := PackedByteArray(), origin := "paste") -> Dictionary:
+	return _import_web(legacy_payload(text), text, bytes, origin)
+
+
+static func _import_web(payload: Dictionary, text: String, bytes: PackedByteArray, origin: String) -> Dictionary:
 	if bytes.is_empty():
 		bytes = text.to_utf8_buffer()
-	var payload := legacy_payload(text)
 	if payload.is_empty():
 		return {}
 	var run: Variant = payload.get("run")
@@ -214,7 +238,7 @@ static func import_legacy(text: String, bytes := PackedByteArray(), origin := "p
 		for key: String in research:
 			if research[key] is bool and research[key]:
 				completed_research[key] = true
-	return {
+	var imported := {
 		"gold": gold,
 		"inventory": inventory,
 		"completed_research": completed_research,
@@ -223,6 +247,12 @@ static func import_legacy(text: String, bytes := PackedByteArray(), origin := "p
 		LEGACY_SHA256: sha256_hex(bytes),
 		LEGACY_ORIGIN: origin,
 	}
+	# legacy_original() of this state would decode the bytes and parse the same text again. When the bytes
+	# are exactly this text, its answer is known: remember it (the cache keeps its own copy of the payload).
+	if utf8_text(bytes) == text:
+		_original_key = "%s|%s|%s" % [imported[LEGACY_SHA256], origin, imported[LEGACY_BYTES]]
+		_original_result = {"status": "ok", "bytes": bytes, "payload": payload.duplicate(true), "origin": origin, "reason": ""}
+	return imported
 
 
 static func _parse_object(text: String) -> Dictionary:
@@ -235,7 +265,11 @@ static func _parse_object(text: String) -> Dictionary:
 static func _load_game(path: String) -> Dictionary:
 	if not FileAccess.file_exists(path):
 		return {}
-	return parse_game(FileAccess.get_file_as_string(path))
+	var bytes := FileAccess.get_file_as_bytes(path)
+	var state := parse_game(bytes.get_string_from_utf8())
+	if path == SAVE_PATH and not state.is_empty():
+		_known_good_sha256 = sha256_hex(bytes)
+	return state
 
 
 static func _existing_path(path: String) -> String:
@@ -245,8 +279,11 @@ static func _existing_path(path: String) -> String:
 static func _write_game(text: String, path: String) -> Error:
 	# Corrupt or newer saves require explicit recovery. Autosave must keep the file intact.
 	var existing_path := _existing_path(path)
-	if FileAccess.file_exists(existing_path) and _load_game(existing_path).is_empty():
-		return ERR_FILE_UNRECOGNIZED
+	if FileAccess.file_exists(existing_path):
+		var ours := existing_path == SAVE_PATH and not _known_good_sha256.is_empty() \
+			and sha256_hex(FileAccess.get_file_as_bytes(existing_path)) == _known_good_sha256
+		if not ours and _load_game(existing_path).is_empty():
+			return ERR_FILE_UNRECOGNIZED
 	var token := Crypto.new().generate_random_bytes(16).hex_encode()
 	var temporary_path := "%s.%s.tmp" % [path, token]
 	var file := FileAccess.open(temporary_path, FileAccess.WRITE)
@@ -271,6 +308,8 @@ static func _write_game(text: String, path: String) -> Error:
 		result = DirAccess.rename_absolute(absolute_temporary_path, absolute_path)
 	if result != OK:
 		DirAccess.remove_absolute(absolute_temporary_path)
+	elif path == SAVE_PATH:
+		_known_good_sha256 = sha256_hex(text.to_utf8_buffer())
 	return result
 
 
