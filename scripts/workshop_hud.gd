@@ -1191,8 +1191,9 @@ func _render_tunnel(tunnel: Dictionary, completed: Dictionary, inventory: Dictio
 		return
 	if tunnel.open:
 		_add_row("산맥 터널", "개통 완료 · 산 너머로 걸어갈 수 있어요.")
-	elif int(tunnel.remaining) > 0:
-		_add_row("터널 공사 중", "%d초 남음 · 진행 상황은 자동 저장돼요." % int(tunnel.remaining))
+	elif bool(tunnel.get("building", int(tunnel.remaining) > 0)):
+		var left := int(tunnel.remaining)
+		_add_row("터널 공사 중", "%d:%02d 남음 · 게임을 꺼 두어도 공사는 계속돼요." % [left / 60, left % 60])
 	else:
 		var cost: Dictionary = tunnel.cost
 		_add_row("터널 공사 의뢰", "%d G · %s · %d초 · 터널 굴착 연구 필요" % [cost.COMMISSION_GOLD, _describe_items(cost.COMMISSION_PRODUCTS), cost.DURATION_SEC],

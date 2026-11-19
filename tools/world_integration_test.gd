@@ -30,20 +30,24 @@ func _run() -> void:
 		"a secured vein mines miningPower times the multiplier")
 	g.state.gold = 300000.0
 	g.state.inventory.merge({"alloy": 5.0, "manaLamp": 4.0, "steelGear": 5.0, "crystalLens": 3.0}, true)
+	# The tunnel job runs on real time (web tunnelContract): the test drives the game's clock.
+	g.clock_override_ms = 1000000.0
 	check(not g.order_tunnel(), "research required for construction")
 	check(g.unlock("tunnelWork") and not w.tunnel_unlocked, "research alone does not open tunnel")
 	check(g.order_tunnel() and not g.order_tunnel(), "commission paid only once")
-	check(g.state.tunnel_remaining == 600.0, "original construction duration")
-	for i in 1000:
-		g._tick()
+	check(g.state.tunnel_remaining == 600.0 and g.world.tunnel_contract.startedAt == 1000000.0, "original construction duration")
+	g.clock_override_ms += 100000.0
+	g._tick()
 	var running_save: String = g.export_save()
 	var paid_gold: float = g.state.gold
 	check(g.import_save(running_save), "active construction imports")
 	w = g.world
+	g._tick()
 	check(absf(g.state.tunnel_remaining - 500.0) < 0.001 and g.state.gold == paid_gold and not g.order_tunnel(), "construction remaining time and payment survive restore")
-	for i in 4999:
-		g._tick()
+	g.clock_override_ms += 499900.0
+	g._tick()
 	check(not w.tunnel_unlocked, "no early opening")
+	g.clock_override_ms += 100.0
 	g._tick()
 	check(w.tunnel_unlocked, "completion opens world")
 	check(g.unlock("explorationGear") and w.discovery_radius() == 4.0, "exploration radius")

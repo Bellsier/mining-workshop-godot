@@ -169,7 +169,12 @@ func _hut_ticks() -> void:
 		game.set_hut_recipe(hut.id, "steel" if i % 2 == 0 else "ironTool")
 		game.set_hut_auto(hut.id, true)
 	game.state.inventory.coalBrick = 1e5
+	# The first tick lays the village out once (web villageEnsureSites; timed in village_layout_test).
 	var started := Time.get_ticks_usec()
+	game._tick()
+	print("save performance: the first tick (village laid out once) %.0f ms" % _ms(started))
+	_check(game.state.village.get("district") is Dictionary, "the first tick laid the village out")
+	started = Time.get_ticks_usec()
 	for i in 1000:
 		game._tick()
 	var ms := _ms(started)

@@ -9,11 +9,11 @@ extends RefCounted
 ## so a web save's huts load unchanged and a Godot save keeps them in the same place.
 ##
 ## Only pure rules live here. Paying, stock and the tick are in workshop.gd, next to the recipe cards.
-## Not ported yet: the village sites, plaza and roads a new hut keeps clear of (the Godot port has no
-## village layout), and drawing the huts on the world map.
+## Drawing the huts is in scripts/world/world_map.gd; the village they keep clear of in scripts/village_layout.gd.
 
 const WorldData := preload("res://scripts/world/world_data.gd")
 const WorldTerrain := preload("res://scripts/world/world_terrain.gd")
+const VillageLayout := preload("res://scripts/village_layout.gd")
 
 ## The 256 test world's edge (web WORLD256.EDGE): saved cells there may reach +-31.
 const SEEDED_EDGE := 31
@@ -102,15 +102,20 @@ static func max_count(data: Dictionary, research: Dictionary) -> int:
 
 
 ## The first open cell of the rings round the base (radius 1 to 4), clear of rock, the tunnel mouth, the base,
-## every vein (hidden ones too) and the other huts (web workshopBuildSpot without the village). While such a
-## cell is free, a new hut is not put right behind the cabin nor door to door beside another hut.
+## every vein (hidden ones too), the other huts and, with `world` and `village` given, the village sites, plaza,
+## house, garden and roads (web workshopBuildSpot). While such a cell is free, a new hut is not put right behind
+## the cabin nor door to door beside another hut, nor where the roads laid round the huts would cross a hut.
 ## `any_only` asks only whether any cell is free. Returns Vector2i, or null when there is none.
-static func build_spot(base: Vector2i, mines: Array, huts: Array, seeded := false, any_only := false) -> Variant:
+static func build_spot(base: Vector2i, mines: Array, huts: Array, seeded := false, any_only := false,
+		world: RefCounted = null, village := {}) -> Variant:
 	var taken := {Vector2i(base.x, base.y): true}
 	for m: Dictionary in mines:
 		taken[Vector2i(int(m.x), int(m.y))] = true
 	for w: Dictionary in huts:
 		taken[Vector2i(int(w.x), int(w.y))] = true
+	var V: Dictionary = VillageLayout.V()
+	var has_village := world != null and not village.is_empty()
+	var roads: Array = VillageLayout.roads(world, village) if has_village else []
 	for spaced: bool in ([false] if any_only else [true, false]):
 		for r in range(1, 5):
 			for dy in range(-r, r + 1):
@@ -123,10 +128,29 @@ static func build_spot(base: Vector2i, mines: Array, huts: Array, seeded := fals
 						continue
 					if not WorldTerrain.is_cell_open_for_mines(x, y) or taken.has(Vector2i(x, y)):
 						continue
-					if spaced and _crowded(base, huts, x, y):
+					if has_village and (VillageLayout.site_near(village, x, y, V.SITE.WORKSHOP_CLEAR) \
+							or VillageLayout.ground_near(world, village, roads, x, y, V.DISTRICT.BUILD_CLEAR)):
+						continue
+					if spaced and (_crowded(base, huts, x, y) or (has_village and not _roads_keep_off(world, village, x, y))):
 						continue
 					return Vector2i(x, y)
 	return null
+
+
+## With a hut at (x, y) the roads are laid round it again: they must keep off every hut (web roadsKeepOff).
+static func _roads_keep_off(world: RefCounted, village: Dictionary, x: int, y: int) -> bool:
+	if not village.get("district") is Dictionary:
+		return true
+	world.workshops.append({"id": "_spot", "x": x, "y": y})
+	var roads := VillageLayout.roads(world, village)
+	var clear: float = VillageLayout.V().DISTRICT.BUILD_CLEAR
+	var ok := true
+	for w: Dictionary in world.workshops:
+		if VillageLayout.ground_near(world, village, roads, w.x, w.y, clear):
+			ok = false
+			break
+	world.workshops.pop_back()
+	return ok
 
 
 static func _crowded(base: Vector2i, huts: Array, x: int, y: int) -> bool:

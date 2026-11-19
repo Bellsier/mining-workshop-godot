@@ -79,6 +79,12 @@ jobs:
           set -o pipefail
           godot --headless --path . --script res://tools/economy_parity_test.gd 2>&1 | tee "$RUNNER_TEMP/economy.log"
           grep -F 'ECONOMY PARITY PASS' "$RUNNER_TEMP/economy.log"
+      - name: Village layout matches the web original (sites, plaza, roads, garden, hut spots)
+        shell: bash
+        run: |
+          set -o pipefail
+          godot --headless --path . --script res://tools/village_layout_test.gd 2>&1 | tee "$RUNNER_TEMP/village-layout.log"
+          grep -F 'VILLAGE LAYOUT PASS' "$RUNNER_TEMP/village-layout.log"
       - name: Large saves with huts (import, autosave, load times and nothing lost)
         shell: bash
         run: |

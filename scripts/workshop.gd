@@ -10,6 +10,7 @@ const Save = preload("res://scripts/workshop_save.gd")
 const Delivery = preload("res://scripts/workshop_delivery.gd")
 const Village = preload("res://scripts/workshop_village.gd")
 const CraftHuts = preload("res://scripts/craft_huts.gd")
+const VillageLayout = preload("res://scripts/village_layout.gd")
 const Hud = preload("res://scripts/workshop_hud.gd")
 const WorldTerrainScript = preload("res://scripts/world/world_terrain.gd")
 const CATALOG := "res://data/web_catalog.json"
@@ -457,7 +458,17 @@ func _restore(source: Dictionary) -> void:
 			state.legacy_web_save = original.payload.duplicate(true)
 	var legacy: Dictionary = _dictionary(state.get("legacy_web_save"))
 	var legacy_run := _dictionary(legacy.get("run"))
-	state["village"] = Village.load_progress(source.get("village", legacy_run.get("village")))
+	var village_source: Variant = source.get("village", legacy_run.get("village"))
+	# A Godot save from before the village layout was ported has no sites: those of the web save it was
+	# imported from are taken from that save (the plaza, the garden and its decorations too).
+	var legacy_village := _dictionary(legacy_run.get("village"))
+	if village_source is Dictionary and not village_source.has("sites") and legacy_village.has("sites"):
+		village_source = village_source.duplicate()
+		for key in ["sites", "district", "decor"]:
+			if legacy_village.has(key):
+				village_source[key] = legacy_village[key]
+	state["village"] = Village.load_progress(village_source)
+	_village_try_key = ""
 	if not legacy.is_empty() and not source.has("characters"):
 		var run := legacy_run
 		var permanent := _dictionary(legacy.get("permanent"))
@@ -487,14 +498,23 @@ func _restore(source: Dictionary) -> void:
 
 	var legacy_world := _dictionary(legacy_run.get("world"))
 	var world_data: Dictionary = source.get("world", legacy_world)
-	# Craft huts: a Godot save written before huts were ported has no "workshops" in its world. The huts of
-	# the web save it was imported from are then taken from that save, so they are not lost.
-	if not world_data.has("workshops") and legacy_world.has("workshops"):
-		world_data = world_data.duplicate()
-		world_data["workshops"] = legacy_world.workshops
+	# A Godot save written before huts, torches and the tunnel job were ported has none of them in its world.
+	# Those of the web save it was imported from are then taken from that save, so they are not lost.
+	for key in ["workshops", "torches", "tunnelContract"]:
+		if not world_data.has(key) and legacy_world.has(key):
+			world_data = world_data.duplicate()
+			world_data[key] = legacy_world[key]
 	world = World.from_dict(world_data) if world_data.has("mines") else World.new_game()
 	if not world_data.has("mines"):
 		world.workshops = CraftHuts.sanitize(world_data.get("workshops", []), _tables.recipes, world.is_seeded())
+		world.torches = World.sanitize_torches(world_data.get("torches", []), world.is_seeded())
+		world.tunnel_contract = {} if world.tunnel_unlocked else World.sanitize_contract(world_data.get("tunnelContract"))
+	# Builds before the wall-clock job counted the tunnel down in play time (tunnel_remaining): that job
+	# goes on from where it stood.
+	var remaining_before := float(state.get("tunnel_remaining", 0.0))
+	if world.tunnel_contract.is_empty() and remaining_before > 0.0 and not world.tunnel_unlocked:
+		var duration := float(data.balance.tunnel.DURATION_SEC)
+		world.tunnel_contract = {"startedAt": now_ms() - (duration - minf(remaining_before, duration)) * 1000.0, "durationSec": duration}
 	World.set_current(world)
 	# Like the web researchSyncFromState: huts or automation already in use count as researched.
 	var in_use := CraftHuts.research_in_use(world.workshops, _dictionary(state.automation.get("craft")))
@@ -578,13 +598,51 @@ func auto_rate(id: String) -> float:
 			veins += vein_rate(m)
 	return (workers + workforce + veins) * _multiplier()
 
+## The clock the tunnel job runs on (web gameNowMs: Date.now). Tests set clock_override_ms.
+var clock_override_ms := -1.0
+
+func now_ms() -> float:
+	return clock_override_ms if clock_override_ms >= 0.0 else Time.get_unix_time_from_system() * 1000.0
+
+## Seconds of tunnel work left (web tunnelWorkRemainingSec), or -1 without a job. A start time in the future
+## (the clock set back) counts as just started.
+func tunnel_remaining_sec() -> float:
+	var job: Dictionary = world.tunnel_contract
+	if job.is_empty():
+		return -1.0
+	var elapsed := maxf(0.0, (now_ms() - float(job.startedAt)) / 1000.0)
+	return maxf(0.0, float(job.durationSec) - elapsed)
+
+## Opens the tunnel when the work is done (web tickTunnelWork). The job runs on real time, so it also goes on
+## while the game is closed. A start time in the future is moved to now. Returns true when it just opened.
+func _tick_tunnel() -> bool:
+	var job: Dictionary = world.tunnel_contract
+	if job.is_empty():
+		state.tunnel_remaining = 0.0
+		return false
+	var now := now_ms()
+	if float(job.startedAt) > now:
+		job.startedAt = now
+	var left := tunnel_remaining_sec()
+	state.tunnel_remaining = left
+	if left > 0.0:
+		return false
+	world.tunnel_contract = {}
+	state.tunnel_remaining = 0.0
+	world.unlock_tunnel()
+	_record_world()
+	feedback.emit("터널이 열렸습니다. 산 너머로 갈 수 있어요.")
+	return true
+
 func order_tunnel(_id := "") -> bool:
-	if world.tunnel_unlocked or state.tunnel_remaining > 0.0 or not state.completed_research.get("tunnelWork", false):
+	if world.tunnel_unlocked or not world.tunnel_contract.is_empty() or not state.completed_research.get("tunnelWork", false):
 		return false
 	var rules: Dictionary = data.balance.tunnel
 	if not _pay({"gold": rules.COMMISSION_GOLD, "products": rules.COMMISSION_PRODUCTS}):
 		return _reject("터널 공사 비용이 부족해요.")
+	world.tunnel_contract = {"startedAt": now_ms(), "durationSec": float(rules.DURATION_SEC)}
 	state.tunnel_remaining = float(rules.DURATION_SEC)
+	_record_world()
 	return _updated("터널 공사를 시작했어요.")
 
 # --- craft huts (제작소) ----------------------------------------------------------------------------------
@@ -596,6 +654,23 @@ func hut_by_id(id: String) -> Dictionary:
 			return hut
 	return {}
 
+var _village_try_key := ""
+
+## Gives the village its facility sites and plaza when it has none yet (web villageEnsureSites, run by
+## tickStep): once per world shape, since a search that found nothing is not repeated until the world changes.
+## Returns true when the village changed.
+func _ensure_village() -> bool:
+	var v: Dictionary = state.village
+	if v.sites.get("appraiser") is Dictionary and v.sites.get("museum") is Dictionary and v.get("district") is Dictionary:
+		return false
+	var key := "%d,%d|%d|%d|%s|%d" % [world.base.x, world.base.y, world.mines.size(), world.workshops.size(), world.tunnel_unlocked, world.torches.size()]
+	if key == _village_try_key:
+		return false
+	var before := JSON.stringify([v.sites, v.get("district")])
+	var done := VillageLayout.ensure_sites(world, v)
+	_village_try_key = "" if done and v.get("district") is Dictionary else key
+	return JSON.stringify([v.sites, v.get("district")]) != before
+
 ## Why the next hut cannot be built ("" when it can): research, the limit, gold and parts, then a free cell.
 func hut_build_block() -> String:
 	if not state.completed_research.get("workshopBuild", false):
@@ -605,7 +680,7 @@ func hut_build_block() -> String:
 	var count: int = world.workshops.size()
 	if float(state.gold) < CraftHuts.build_cost(data, count) or not _has(CraftHuts.build_products(data, count)):
 		return "cost"
-	if CraftHuts.build_spot(world.base, world.mines, world.workshops, world.is_seeded(), true) == null:
+	if CraftHuts.build_spot(world.base, world.mines, world.workshops, world.is_seeded(), true, world, state.village) == null:
 		return "spot"
 	return ""
 
@@ -615,7 +690,7 @@ func build_hut(_id := "") -> bool:
 	if not block.is_empty():
 		return _reject({"research": "먼저 연구에서 \"제작소 건설\"을 마쳐 주세요.", "limit": "제작소를 더 지을 수 없어요.",
 			"cost": "제작소를 지을 비용이 부족해요.", "spot": "공방 주변에 제작소를 지을 빈 자리가 없어요."}[block])
-	var spot: Vector2i = CraftHuts.build_spot(world.base, world.mines, world.workshops, world.is_seeded())
+	var spot: Vector2i = CraftHuts.build_spot(world.base, world.mines, world.workshops, world.is_seeded(), false, world, state.village)
 	var count: int = world.workshops.size()
 	var taken := {}
 	for hut: Dictionary in world.workshops:
@@ -774,7 +849,7 @@ func snapshot() -> Dictionary:
 			{"id": "gold", "name": "인부 뽑기 (골드)", "cost": data.balance.gacha.PULL_COST_GOLD}],
 		"owned_workers": assigned, "worker_details": workers, "tickets": state.tickets, "research": research,
 		"completed_research": state.completed_research, "stats": state.stats, "automation": state.automation,
-		"tunnel": {"open": world.tunnel_unlocked, "remaining": ceili(state.tunnel_remaining), "cost": data.balance.tunnel},
+		"tunnel": {"open": world.tunnel_unlocked, "remaining": ceili(maxf(0.0, tunnel_remaining_sec())), "building": not world.tunnel_contract.is_empty(), "cost": data.balance.tunnel},
 		"sites": sites, "upgrades": _upgrade_options(), "huts": _huts_snapshot(), "mining": _mining_snapshot(),
 		"hint": next_hint(), "worker_cap": worker_cap(), "last_pull": _last_pull_text(), "deliveries": Delivery.offers(data, state),
 		"reputation": Delivery.reputation(data, state), "village": Village.snapshot(data, state.village), "save_error": _save_error}
@@ -871,7 +946,7 @@ func _late_game_hint() -> String:
 	var site := next_expansion_site()
 	if not site.is_empty() and float(state.gold) >= float(site.unlockCost) and _has(site.unlockProducts):
 		return "채굴 탭에서 %s을(를) 열 수 있어요. 새 자원으로 더 높은 제품을 만들 수 있습니다." % site.name
-	if state.tunnel_remaining > 0.0 and not world.tunnel_unlocked:
+	if not world.tunnel_contract.is_empty() and not world.tunnel_unlocked:
 		return "터널 공사가 진행 중이에요. 끝나면 산 너머로 갈 수 있습니다. 그동안 다른 일을 해 두세요."
 	if state.completed_research.get("tunnelWork", false) == true and not world.tunnel_unlocked:
 		return "연구 탭에서 터널 공사를 의뢰할 수 있어요. 산 너머의 희귀한 광맥으로 가는 길이 열립니다."
@@ -1449,15 +1524,10 @@ func _process(delta: float) -> void:
 		flush()
 
 func _tick() -> bool:
-	var mutated := false
-	if state.tunnel_remaining > 0.0:
-		state.tunnel_remaining = maxf(0.0, float(state.tunnel_remaining) - TICK)
-		mutated = true
-		if state.tunnel_remaining < 0.00001:
-			state.tunnel_remaining = 0.0
-			world.unlock_tunnel()
-			_record_world()
-			feedback.emit("터널 개통 · 산 너머로 갈 수 있어요.")
+	var mutated := _ensure_village()
+	# web tickStep runs the tunnel job last; it only reads the clock, so its place does not matter.
+	if not world.tunnel_contract.is_empty():
+		mutated = _tick_tunnel() or mutated
 	# The original runs ticketTrickle on a fixed 45 s interval from page start and grants nothing until
 	# the first-ticket milestone (firstGachaGranted). The clock keeps running before the milestone.
 	state.ticket_elapsed += TICK
