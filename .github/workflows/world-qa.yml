@@ -52,6 +52,13 @@ jobs:
           for test in save_migration_test workshop_migration_test world_integration_test unified_world_route_test world_scene_test; do
             timeout 90 godot --headless --path . --fixed-fps 60 --script "res://tools/$test.gd" 2>&1 | tee "$RUNNER_TEMP/$test.log"
           done
+      - name: Parity fixes (tickets, auto-sell, order timer, fractional stock, JS save kept)
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/parity-fixes"
+          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/parity-fixes" godot --headless --path . --script res://tools/parity_fixes_test.gd 2>&1 | tee "$RUNNER_TEMP/parity-fixes.log"
+          grep -F 'PARITY FIXES PASS' "$RUNNER_TEMP/parity-fixes.log"
       - name: Failed import preserves world and protected save
         shell: bash
         run: |

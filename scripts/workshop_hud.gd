@@ -372,25 +372,46 @@ func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: 
 		var quantity := floori(float(inventory[id]))
 		if quantity > 0:
 			visible_quantities[id] = quantity
+	# Inventory and sales show amounts as text, so they redraw when that text changes (0.5 → 0.6).
+	var shown_quantities := {}
+	for id in inventory:
+		if float(inventory[id]) > 0.0:
+			shown_quantities[id] = format_quantity(float(inventory[id]))
 	var automation: Dictionary = state.get("automation", {})
 	var completed: Dictionary = state.get("completed_research", {})
 	match _active_tab:
-		TAB_INVENTORY: return JSON.stringify(visible_quantities)
+		TAB_INVENTORY: return JSON.stringify(shown_quantities)
 		TAB_CRAFT:
 			var remaining := []
 			for recipe in recipes:
 				remaining.append(ceili(float(recipe.get("remaining", 0))))
 			return JSON.stringify([visible_quantities, automation, completed, remaining])
-		TAB_SELL: return JSON.stringify([visible_quantities, automation, gold])
+		TAB_SELL: return JSON.stringify([shown_quantities, automation, gold])
 		TAB_RESEARCH: return JSON.stringify([state.get("tunnel", {}), visible_quantities, completed, state.get("sites", []), state.get("upgrades", []), gold])
 		TAB_VILLAGE: return JSON.stringify([visible_quantities, state.get("village", {}), gold])
 	return str(_active_tab)
 
 func _render_inventory(inventory: Dictionary) -> void:
 	for key in inventory:
-		var quantity := int(inventory[key])
-		if quantity > 0:
-			_add_row(_name_for(str(key)), "%d개" % quantity)
+		var quantity := float(inventory[key])
+		if quantity > 0.0:
+			_add_row(_name_for(str(key)), "%s개" % format_quantity(quantity))
+
+## The original's fmt(): "0" for nothing, one decimal below 10 when fractional, else whole units with
+## thousands separators. A 0.5 iron stays visible as "0.5" instead of rounding down to nothing.
+static func format_quantity(value: float) -> String:
+	if not is_finite(value) or value <= 0.0:
+		return "0"
+	if value < 10.0 and value != floorf(value):
+		# toFixed(1): round half up on the stored value (0.25 → "0.3", 9.96 → "10.0").
+		var tenths := int(floorf(value * 10.0 + 0.5))
+		return "%.1f" % (tenths / 10.0)
+	var digits := str(int(floorf(value)))
+	var grouped := ""
+	while digits.length() > 3:
+		grouped = "," + digits.substr(digits.length() - 3) + grouped
+		digits = digits.substr(0, digits.length() - 3)
+	return digits + grouped
 
 func _render_recipes(recipes: Array, inventory: Dictionary, automation: Dictionary, auto_craft_unlocked: bool) -> void:
 	var auto_craft: Dictionary = automation.get("craft", {})
@@ -427,8 +448,8 @@ func _render_sales(resources: Array, products: Array, recipes: Array, inventory:
 	var costs: Variant = automation.get("sell_cost", automatic_costs)
 	for key in prices:
 		var id := str(key)
-		var quantity := int(inventory.get(id, 0))
-		var actions := _add_row(_name_for(id), "보유 %d개 · 개당 %d G" % [quantity, prices[key]], "전량 판매", "sell", id, quantity > 0)
+		var quantity := float(inventory.get(id, 0))
+		var actions := _add_row(_name_for(id), "보유 %s개 · 개당 %d G" % [format_quantity(quantity), prices[key]], "전량 판매", "sell", id, quantity > 0.0)
 		if bool(licenses.get(id, false)) and _workshop.has_method("set_auto_sell"):
 			_add_toggle(actions, "자동 판매", "set_auto_sell", id, bool(auto_sell.get(id, false)))
 		elif costs != null and _workshop.has_method("buy_auto_sell"):

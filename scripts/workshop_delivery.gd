@@ -120,7 +120,8 @@ static func tick(data: Dictionary, state: Dictionary, delta: float, economy_mult
 		else:
 			progress["orderTimer"] = float(progress["orderTimer"]) + delta
 			if float(progress["orderTimer"]) >= arrival:
-				progress["orderTimer"] = fmod(float(progress["orderTimer"]), arrival)
+				# Original tickOrders: the timer restarts at 0 when an order is issued; overflow is not carried.
+				progress["orderTimer"] = 0.0
 				var order := _next_order(data, state, company, progress)
 				if not order.is_empty():
 					orders.append(order)

@@ -2,7 +2,7 @@ name: Godot migration QA
 
 on:
   push:
-    branches: [codex/godot-migration]
+    branches: [codex/godot-migration, claude/feature-parity-p0]
   pull_request:
     branches: [main]
 

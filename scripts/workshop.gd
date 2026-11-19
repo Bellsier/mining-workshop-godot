@@ -11,6 +11,8 @@ const Delivery = preload("res://scripts/workshop_delivery.gd")
 const Village = preload("res://scripts/workshop_village.gd")
 const CATALOG := "res://data/web_catalog.json"
 const TICK := 0.1
+## Ten 0.1 s ticks sum to slightly less than 1 s in floating point; the boundary must not slip a tick.
+const TICKET_EPSILON := 0.000001
 const WEB_SAVE_SCRIPT := "res://scripts/workshop_web_save.js"
 ## Where an import keeps the save it replaced, and where a set-aside protected save is kept (web).
 const WEB_IMPORT_BACKUP := "slot:main:before-import"
@@ -428,6 +430,8 @@ func _restore(source: Dictionary) -> void:
 		"position": {}, "tunnel_open": false, "tunnel_remaining": 0.0,
 	}
 	state.merge(source, true)
+	# The original's ticket interval starts again at every page load; it is not carried in the save.
+	state.ticket_elapsed = 0.0
 	var legacy: Dictionary = source.get("legacy_web_save", {})
 	var legacy_run := _dictionary(legacy.get("run"))
 	state["village"] = Village.load_progress(source.get("village", legacy_run.get("village")))
@@ -954,12 +958,15 @@ func _tick() -> bool:
 			world.unlock_tunnel()
 			_record_world()
 			feedback.emit("터널 개통 · 산 너머로 갈 수 있어요.")
+	# The original runs ticketTrickle on a fixed 45 s interval from page start and grants nothing until
+	# the first-ticket milestone (firstGachaGranted). The clock keeps running before the milestone.
 	state.ticket_elapsed += TICK
 	var ticket_interval := float(data.balance.gacha.TICKET_TRICKLE_MS) / 1000.0
-	if state.ticket_elapsed >= ticket_interval:
-		state.ticket_elapsed -= ticket_interval
-		state.tickets += 1
-		mutated = true
+	if state.ticket_elapsed >= ticket_interval - TICKET_EPSILON:
+		state.ticket_elapsed = maxf(0.0, float(state.ticket_elapsed) - ticket_interval)
+		if state.first_ticket:
+			state.tickets += 1
+			mutated = true
 	var mining_rates: Dictionary = {}
 	for worker: Dictionary in state.characters:
 		var id: String = worker.resource
@@ -988,7 +995,8 @@ func _tick() -> bool:
 				mutated = _start_craft(id) or mutated
 	for id: String in state.automation.sell:
 		if state.automation.sell[id] and state.automation.sell_owned.get(id, false):
-			if not _tables.recipes.get(id, {}).get("workshopOnly", true):
+			# Original canAutoSell: only recipes marked workshopOnly are excluded; the flag defaults to false.
+			if not _tables.recipes.get(id, {}).get("workshopOnly", false):
 				mutated = (_sell(id) > 0.0) or mutated
 	var delivery := Delivery.tick(data, state, TICK, multiplier)
 	for message: String in delivery.get("messages", []):
