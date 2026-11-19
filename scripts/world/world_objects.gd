@@ -45,6 +45,10 @@ func setup(game_economy: Node, world_state: RefCounted, walker: Node2D) -> void:
 	_lights = Node2D.new()
 	_lights.name = "Lights"
 	add_child(_lights)
+	var workers := preload("res://scripts/world/world_workers.gd").new()
+	workers.name = "Workers"
+	add_child(workers)
+	workers.setup(economy, world)
 	_modulate = CanvasModulate.new()
 	_modulate.name = "Dusk"
 	get_parent().get_parent().add_child.call_deferred(_modulate)

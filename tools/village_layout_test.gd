@@ -10,6 +10,7 @@ extends SceneTree
 const World = preload("res://scripts/world/world_state.gd")
 const Layout = preload("res://scripts/village_layout.gd")
 const CraftHuts = preload("res://scripts/craft_huts.gd")
+const Workers = preload("res://scripts/world/world_workers.gd")
 const ExactJson = preload("res://scripts/exact_json.gd")
 const WEB := "res://tests/fixtures/village_web_fixtures.json"
 
@@ -33,6 +34,7 @@ func _run() -> void:
 	for case: Dictionary in web.cases:
 		var label := "seed %d%s" % [int(case.seed), " (huts, torch, tunnel open)" if case.tunnel else ""]
 		var world: RefCounted = World.new_game(int(case.seed))
+		world.hidden_ids.clear() # the fixture's world has every vein found (hiddenMineIds [])
 		var mines: Array = []
 		for m: Dictionary in world.mines:
 			mines.append([m.id, int(m.x), int(m.y), m.resource])
@@ -78,6 +80,18 @@ func _run() -> void:
 			var ground := Layout.ground_near(world, village, roads, float(n[0]), float(n[1]), 0.7)
 			var site := Layout.site_near(village, float(n[0]), float(n[1]), 1.6)
 			_check(ground == bool(n[2]) and site == bool(n[3]), "%s: (%s, %s) village ground %s/%s, web %s/%s" % [label, n[0], n[1], ground, site, n[2], n[3]])
+		# Where hired workers stand (web tdComputeWorkerPlacements), with the first vein secured.
+		var characters := [{"id": "w_a", "rarity": "rare", "resource": "iron"}, {"id": "w_b", "rarity": "common", "resource": "coal"},
+			{"id": "w_c", "rarity": "epic", "resource": "iron"}, {"id": "w_d", "rarity": "legend", "resource": "mana"},
+			{"id": "w_e", "rarity": "common", "resource": "iron"}, {"id": "w_f", "rarity": "common", "resource": "iron"}]
+		if not world.mines.is_empty():
+			world.mines[0].developmentState = "secured"
+		var placed: Array = Workers.placements(world, village, characters).map(func(p: Dictionary) -> Array:
+			return [p.id, p.x, p.y, null if str(p.mine_id).is_empty() else p.mine_id, p.dir])
+		if not world.mines.is_empty():
+			world.mines[0].developmentState = "unsecured"
+		var want_workers: Array = case.workers.map(func(w: Array) -> Array: return [w[0], float(w[1]), float(w[2]), w[3], w[4]])
+		_check(placed == want_workers, "%s: workers stand at\n   godot %s\n   web   %s" % [label, placed, want_workers])
 		# Craft huts built next to the village keep clear of it (web workshopBuildSpot).
 		var built: Array = []
 		for i in case.built.size():

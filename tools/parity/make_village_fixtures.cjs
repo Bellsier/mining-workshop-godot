@@ -35,6 +35,9 @@ run(read('js/research.js'), 'research.js');
 run(read('js/systems.js'), 'systems.js');
 run(read('js/factory.js'), 'factory.js');
 run('log = function(){};', 'nolog.js');
+// js/topdown/workers.js: where the hired workers stand (renderer-only, never saved) and their route.
+run('var TD = {};', 'td.js');
+run(read('js/topdown/workers.js'), 'topdown/workers.js');
 const setState = (s) => { ctx.__s = s; run('state = this.__s; permanent = { tickets: 0, totalPrestige: 0, companies: {} };' +
   ' villageRoadCache = null; villageObstacleCache = null; villageSiteFailKey = null; villageDistrictFailKey = null; worldSceneryCache = null;', 'set.js'); };
 
@@ -66,11 +69,21 @@ for (const sc of scenarios) {
   const ok = ctx.villageEnsureSites();
   if (sc.decor) village.decor = [{ kind: 'flowerPot', cell: 0 }, { kind: 'bench', cell: 5 }, { kind: 'lantern', cell: 11 }];
   const roads = ctx.villageRoads().map((r) => ({ to: r.to, points: r.points.map((p) => [p.x, p.y]) }));
+  // Workers on iron, coal and mana (none of those veins secured, so they stand at the found ones / the yard).
+  ctx.state.characters = [
+    { id: 'w_a', rarity: 'rare', resource: 'iron' }, { id: 'w_b', rarity: 'common', resource: 'coal' },
+    { id: 'w_c', rarity: 'epic', resource: 'iron' }, { id: 'w_d', rarity: 'legend', resource: 'mana' },
+    { id: 'w_e', rarity: 'common', resource: 'iron' }, { id: 'w_f', rarity: 'common', resource: 'iron' },
+  ];
+  if (mines[0]) mines[0].developmentState = 'secured';
+  const workers = ctx.tdComputeWorkerPlacements().map((p) => [p.id, p.x, p.y, p.mineId, p.dir]);
+  if (mines[0]) mines[0].developmentState = 'unsecured';
+  ctx.state.characters = [];
   const built = [];
   for (let i = 0; i < (sc.buildHuts || 0); i++) { const h = ctx.buildWorkshop(); built.push(h ? [h.x, h.y] : null); }
   out.cases.push({ seed: sc.seed, huts: sc.huts || [], torches: sc.torches || [], tunnel: !!sc.tunnel, decor: village.decor,
     mines: mines.map((m) => ({ id: m.id, x: m.x, y: m.y, resource: m.resource })), ok, sites: village.sites, district: village.district,
-    roads, garden: ctx.villageGardenCells().map((c) => [c.cell, c.x, c.y]), built,
+    roads, garden: ctx.villageGardenCells().map((c) => [c.cell, c.x, c.y]), built, workers,
     near: [[3, 3], [0, 2], [-2, -1], [5, -2]].map(([x, y]) => [x, y, ctx.villageGroundNear(x, y, 0.7), ctx.villageSiteNear(x, y, 1.6)]) });
 }
 function BALANCE_START(axis) { return ctx.BALANCE.world['START_BASE_' + axis]; }

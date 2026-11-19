@@ -182,6 +182,21 @@ func _physics_process(_dt: float) -> bool:
 			var hut: Dictionary = eco.world.workshops[1]
 			var box: Dictionary = Layout.object_box("workshop", hut.x, hut.y)
 			_check(_player().position.y / UNIT > box.maxY - 0.01, "the hut's walls stop the player (at %s)" % (_player().position / UNIT))
+			# a hired worker walks out of the workshop door to its vein and works there (web workers.js)
+			var vein: Dictionary = eco.world.mines.filter(func(m: Dictionary) -> bool: return m.resource == "iron")[0]
+			eco.world.discover(vein.id)
+			eco.state.characters.append({"id": "w_test", "rarity": "rare", "resource": "iron", "mining": 2, "carry": 3, "move": 2})
+			_next()
+		13:
+			var workers: Node = current_scene.get_node("World/Objects/Workers")
+			var sim: Dictionary = workers._sim.get("w_test", {})
+			if sim.is_empty() or sim.mode == "walk":
+				if frames > 900:
+					return _fail("the worker never reached its vein (at %s)" % [sim])
+				return false
+			var placed: Dictionary = workers._placements.filter(func(p: Dictionary) -> bool: return p.id == "w_test")[0]
+			_check(sim.mode == "work" and Vector2(sim.x, sim.y) == Vector2(placed.x, placed.y) and not str(placed.mine_id).is_empty(),
+				"the worker works at its spot by the iron vein (%s)" % [sim])
 			if _failures.is_empty():
 				print("WORLD OBJECTS PASS")
 				quit(0)
