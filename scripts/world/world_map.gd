@@ -257,6 +257,11 @@ func _build_ui() -> void:
 	_toast.add_theme_color_override("font_outline_color", Color.BLACK)
 	_toast.add_theme_constant_override("outline_size", 3)
 	layer.add_child(_toast)
+	var minimap: Control = preload("res://scripts/world/world_minimap.gd").new()
+	minimap.name = "Minimap"
+	layer.add_child(minimap)
+	minimap.position = Vector2(6, 6)
+	minimap.setup(state, _economy(), player)
 
 # --- drawing --------------------------------------------------------------------------------------------
 
@@ -547,6 +552,27 @@ func torch_act() -> void:
 		return
 	var r: Dictionary = economy.torch_act(to_units(player.position), str(player.get("facing")))
 	show_toast(str(r.text))
+
+
+## What the garden button offers now (web tdGardenButtonMode): "take", "cycle" or "".
+func garden_mode() -> String:
+	var economy := _economy()
+	if economy == null:
+		return ""
+	var carrying := int(economy.garden_ui.carry) >= 0
+	if _target.get("type") != "garden":
+		return "take" if carrying else ""
+	return "take" if carrying or _target.get("action") == "decorPick" else "cycle"
+
+
+func garden_label(mode: String) -> String:
+	var economy := _economy()
+	var touch := DisplayServer.is_touchscreen_available()
+	if mode == "take":
+		return ("" if touch else "[R] ") + "장식 회수"
+	if mode == "cycle" and economy != null:
+		return ("" if touch else "[Q] ") + "다음 장식: " + Layout.decor_def(economy.decor_next()).name
+	return ""
 
 
 ## R takes back the carried decoration or the one in front; Q chooses the next kind (web tdGardenButtonNow).

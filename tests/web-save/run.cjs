@@ -73,9 +73,14 @@ function installFaults(options) {
     if (tx.db.name !== 'mining-workshop-godot' || key !== 'slot:main') return put.call(this, value, key);
     const fault = window.qaWrites;
     fault.puts++;
-    let quantity;
-    try { quantity = JSON.parse(value.text).state.inventory.iron; } catch { quantity = undefined; }
-    if (!fault.targets.includes(quantity)) return put.call(this, value, key);
+    // A write is picked by what it saves: 'iron:<n>' (the inventory's iron) or 'torches:<n>' (torches in the world).
+    let marks = [];
+    try {
+      const saved = JSON.parse(value.text).state;
+      marks = ['iron:' + saved.inventory.iron, 'torches:' + ((saved.world && saved.world.torches) || []).length];
+    } catch { marks = []; }
+    const quantity = marks.find(mark => fault.targets.includes(mark));
+    if (quantity === undefined) return put.call(this, value, key);
     fault.attempted++;
     if (fault.quota > 0) {
       fault.quota--;
@@ -129,10 +134,14 @@ async function prepare(page, origin) {
   const state = initial.state;
   state.position = { scene: 'res://scenes/world/world_map.tscn', x: 228, y: 0 };
   state.world.mines = [
-    // Secured, so E mines it (+1 iron per press); an unsecured vein is secured by its first E, as in the web game.
-    { id: 'mine_start_iron', resource: 'iron', x: 4, y: 0, grade: 1, miningPower: 1, developmentState: 'secured' },
+    { id: 'mine_start_iron', resource: 'iron', x: 4, y: 0, grade: 1, miningPower: 1, developmentState: 'unsecured' },
   ];
   state.world.hiddenMineIds = [];
+  state.world.torches = [];
+  // A fixed village away from the player, so the torch spot in front of it is always free (a new game lays
+  // its village out round its own random veins) and nothing is laid out again on load.
+  state.village = Object.assign({}, state.village, { sites: { appraiser: { x: -3, y: 3 }, museum: { x: -3, y: -3 } },
+    district: { x: -6, y: 5, layout: 0 }, decor: [] });
   state.inventory = { iron: 1 };
   state.ticket_elapsed = 0;
   await page.goto(origin + originFixture);
@@ -143,11 +152,15 @@ async function prepare(page, origin) {
   return store.read(page);
 }
 
-async function mine(page, viewport, mobile) {
-  if (!mobile) return page.keyboard.press('e');
+// The player's one repeatable action that changes the game and nothing else: T sets a torch down in front,
+// T again picks it up (web torchAct; the phone's torch button). Mining a vein would not do: a secured vein
+// yields by itself every second, as in the web game, so the store would change without any input.
+async function act(page, viewport, mobile) {
+  if (!mobile) return page.keyboard.press('t');
   const scale = viewport.height / 270;
-  return page.touchscreen.tap(viewport.width - 60 * scale, viewport.height - 23 * scale);
+  return page.touchscreen.tap(viewport.width - 140 * scale, viewport.height - 23 * scale);
 }
+const torches = record => (record.state.world.torches || []).length;
 
 async function verifyReload(page, expected) {
   await page.reload();
@@ -165,29 +178,31 @@ async function verifyReload(page, expected) {
 
 const scenarios = [
   ['delayed-confirmed', async ({ page, viewport, mobile, shot, note }) => {
-    await inject(page, { targets: [2, 3], delays: { 2: 6200, 3: 6200 } });
-    await mine(page, viewport, mobile);
+    // The first press saves one torch, the second (the torch picked up again) none.
+    await inject(page, { targets: ['torches:1', 'torches:0'], delays: { 'torches:1': 6200, 'torches:0': 6200 } });
+    await act(page, viewport, mobile);
     await waitStatus(page, 'saving');
     await page.waitForFunction(() => qaWrites.attempted === 1);
     assert.equal(await count(page, 'committed'), 0);
     assert.equal(await currentStatus(page), 'saving');
     // The first commit must not acknowledge this newer change.
-    await mine(page, viewport, mobile);
+    await act(page, viewport, mobile);
     await shot('saving');
-    await inject(page, { released: { 2: true } });
+    await inject(page, { released: { 'torches:1': true } });
     await page.waitForFunction(() => qaWrites.committed === 1);
     assert.ok(!SAVED.includes(await currentStatus(page)));
-    await inject(page, { released: { 2: true, 3: true } });
+    assert.equal(torches(await store.read(page)), 1, 'the first commit holds the first press only');
+    await inject(page, { released: { 'torches:1': true, 'torches:0': true } });
     await waitSaved(page);
     const saved = await store.read(page);
-    assert.equal(iron(saved), 3);
+    assert.equal(torches(saved), 0, 'the second press (the torch picked up again) is saved too');
     await verifyReload(page, saved);
     await shot('confirmed-reload');
-    note({ iron: 3, samePositionAndSaveOnReload: true });
+    note({ torchesAfterFirstCommit: 1, torchesSaved: 0, samePositionAndSaveOnReload: true });
   }],
   ['repeated-failure', async ({ page, viewport, mobile, baseline, shot, note }) => {
-    await inject(page, { targets: [2], fail: 10 });
-    await mine(page, viewport, mobile);
+    await inject(page, { targets: ['torches:1'], fail: 10 });
+    await act(page, viewport, mobile);
     await waitStatus(page, 'failed');
     // Retries back off (2 s, 4 s, ...) instead of hammering the store.
     await page.waitForFunction(() => qaWrites.aborted >= 3, undefined, { timeout: 20000 });
@@ -197,26 +212,26 @@ const scenarios = [
     await inject(page, { fail: 0 });
     await waitSaved(page, 30000);
     const saved = await store.read(page);
-    assert.equal(iron(saved), 2);
+    assert.equal(torches(saved), 1);
     const aborted = await count(page, 'aborted');
     await verifyReload(page, saved);
     note({ aborted, priorSavePreserved: true, retriedWithoutInput: true });
   }],
   ['reload-while-pending', async ({ page, viewport, mobile, baseline, shot, note }) => {
-    await inject(page, { targets: [2], delays: { 2: 6500 } });
-    await mine(page, viewport, mobile);
+    await inject(page, { targets: ['torches:1'], delays: { 'torches:1': 6500 } });
+    await act(page, viewport, mobile);
     await page.waitForFunction(() => qaWrites.attempted === 1);
     assert.equal(await currentStatus(page), 'saving');
     assert.equal(await count(page, 'committed'), 0);
     await verifyReload(page, baseline);
     await shot('last-confirmed-save');
-    note({ unconfirmedWriteDiscarded: true, iron: iron(baseline) });
+    note({ unconfirmedWriteDiscarded: true, torches: torches(baseline) });
   }],
 ];
 
 async function timeoutRecovery({ page, viewport, mobile, baseline, note }) {
-  await inject(page, { targets: [2], delays: { 2: 15000 }, fail: 0 });
-  await mine(page, viewport, mobile);
+  await inject(page, { targets: ['torches:1'], delays: { 'torches:1': 15000 }, fail: 0 });
+  await act(page, viewport, mobile);
   await page.waitForFunction(() => qaWrites.attempted === 1);
   // Keep subsequent retries uncommitted until we've inspected the baseline.
   await inject(page, { fail: 10 });
@@ -227,33 +242,33 @@ async function timeoutRecovery({ page, viewport, mobile, baseline, note }) {
   assert.deepEqual(await store.read(page), baseline);
   await inject(page, { fail: 0 });
   await waitSaved(page, 40000);
-  assert.equal(iron(await store.read(page)), 2);
+  assert.equal(torches(await store.read(page)), 1);
   note({ timedOutTransactionAborted: true, priorSavePreserved: true, recovered: true });
 }
 
 // A browser that does not promise strict durability still saves, but the game says so ("saved_basic").
 async function unverifiedDurability({ page, viewport, mobile, note }) {
-  await inject(page, { forceRelaxed: true, targets: [2] });
-  await mine(page, viewport, mobile);
+  await inject(page, { forceRelaxed: true, targets: ['torches:1'] });
+  await act(page, viewport, mobile);
   await page.waitForFunction(() => qaWrites.committed === 1);
   await waitStatus(page, 'saved_basic');
-  assert.equal(iron(await store.read(page)), 2);
-  await inject(page, { forceRelaxed: false, targets: [3] });
-  await mine(page, viewport, mobile);
+  assert.equal(torches(await store.read(page)), 1);
+  await inject(page, { forceRelaxed: false, targets: ['torches:0'] });
+  await act(page, viewport, mobile);
   await page.waitForFunction(() => qaWrites.committed === 2);
   const status = await currentStatus(page);
   note({ relaxedSavedAndLabelled: 'saved_basic', afterStrictRequest: status });
-  assert.equal(iron(await store.read(page)), 3);
+  assert.equal(torches(await store.read(page)), 0);
 }
 
 async function quotaRefusal({ page, viewport, mobile, baseline, note }) {
-  await inject(page, { targets: [2], quota: 1 });
-  await mine(page, viewport, mobile);
+  await inject(page, { targets: ['torches:1'], quota: 1 });
+  await act(page, viewport, mobile);
   await waitStatus(page, 'quota');
   assert.deepEqual(await store.read(page), baseline, 'a refused write leaves the last save');
   // The game waits before trying again after a quota refusal (15 s), then saves.
   await waitSaved(page, 40000);
-  assert.equal(iron(await store.read(page)), 2);
+  assert.equal(torches(await store.read(page)), 1);
   note({ quotaReported: true, priorSavePreserved: true, retriedAfterPause: true });
 }
 
@@ -434,13 +449,13 @@ async function s2Import({ page, baseline, note, shot }) {
   if (engine === 'chromium') await page.keyboard.press('Control+v');
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const importButton = () => page.mouse.click(85, 392);
-  await inject(page, { targets: [7], fail: 1 });
+  await inject(page, { targets: ['iron:7'], fail: 1 });
   await importButton();
   await waitStatus(page, 'failed');
   assert.deepEqual(await store.read(page), baseline);
   assert.equal((await pos(page)).x, 228, 'Failed import did not replace the live world');
   await shot('import-failure');
-  await inject(page, { delays: { 7: 1500 } });
+  await inject(page, { delays: { 'iron:7': 1500 } });
   await importButton();
   await waitStatus(page, 'importing');
   assert.equal((await pos(page)).x, 228, 'Import is not applied while the transaction is pending');

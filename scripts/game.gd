@@ -59,6 +59,7 @@ func bind_level(level: Node2D, player: Node2D) -> void:
 	if old_hint != null:
 		old_hint.hide()
 	_world = level.get_node_or_null("World")
+	_hud.set_torch(_world.torch_act if is_instance_valid(_world) and _world.has_method("torch_act") else Callable())
 	var building := level.get_node_or_null("Workshop") as Node2D
 	if building != null:
 		_world = preload("res://scripts/workshop_world.gd").new()
@@ -84,6 +85,11 @@ func _process(_delta: float) -> void:
 	var live := is_instance_valid(_world) and _world.is_inside_tree()
 	var next: String = _world.context_at(workshop.player.position) if live else ""
 	var action: String = _world.action_label(next) if live else ""
+	var garden: String = _world.garden_mode() if live and _world.has_method("garden_mode") else ""
+	var garden_text: String = _world.garden_label(garden) if not garden.is_empty() else ""
+	if garden_text != _garden_text:
+		_garden_text = garden_text
+		_hud.set_garden(garden_text, func() -> void: if is_instance_valid(_world): _world.garden_key(_world.garden_mode() == "take"))
 	if next != _context or action != _context_action:
 		_context = next
 		_context_action = action
@@ -91,6 +97,7 @@ func _process(_delta: float) -> void:
 		_hud.set_context_hint("E  ·  " + action if not action.is_empty() else "")
 
 var _context_action := ""
+var _garden_text := ""
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed and not event.echo) or workshop_is_open():

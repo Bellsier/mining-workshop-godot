@@ -303,20 +303,103 @@ static func _regular_trade(data: Dictionary, state: Dictionary, company: Diction
 
 
 static func _apply_shipment(data: Dictionary, state: Dictionary, company: Dictionary, progress: Dictionary, recipe: Dictionary, qty: int, cost: int) -> void:
-	var rules := _rules(data, "delivery")
 	var inventory: Dictionary = state["inventory"]
 	var sent: Dictionary = progress["sent"]
 	var product := String(recipe["key"])
 	var previous_qty := float(sent.get(product, 0))
+	progress["score"] = float(progress["score"]) + _score(data, company, progress, recipe, qty)
+	sent[product] = previous_qty + qty
+	inventory[product] = float(inventory[product]) - qty
+	state["gold"] = float(state["gold"]) - cost
+
+
+## The score `qty` of a product adds for a company (web deliveryScore): each unit weighs less the more of it was
+## already sent (down to REPEAT_MIN_WEIGHT), favourites count FAVORITE_MULT times.
+static func _score(data: Dictionary, company: Dictionary, progress: Dictionary, recipe: Dictionary, qty: int) -> float:
+	var rules := _rules(data, "delivery")
+	var previous_qty := float(_as_dictionary(progress.get("sent")).get(String(recipe["key"]), 0))
 	var decay := float(rules.get("REPEAT_DECAY_UNITS", 200))
 	var floor_weight := float(rules.get("REPEAT_MIN_WEIGHT", 0.25))
 	var weighted_units := minf(qty, maxf(0.0, decay * (1.0 - floor_weight) - previous_qty))
 	var slope := weighted_units * (1.0 - previous_qty / decay) - weighted_units * (weighted_units - 1.0) / (2.0 * decay)
-	var favorite := float(rules.get("FAVORITE_MULT", 1.5)) if company["favorites"].has(product) else 1.0
-	progress["score"] = float(progress["score"]) + (slope + (qty - weighted_units) * floor_weight) * float(recipe["sell"]) * favorite
-	sent[product] = previous_qty + qty
-	inventory[product] = float(inventory[product]) - qty
-	state["gold"] = float(state["gold"]) - cost
+	var favorite := float(rules.get("FAVORITE_MULT", 1.5)) if company["favorites"].has(String(recipe["key"])) else 1.0
+	return (slope + (qty - weighted_units) * floor_weight) * float(recipe["sell"]) * favorite
+
+
+## The 납품 tab's company cards (web renderDelivery, companyClosedReason, companyScoreText, tradeStatusText) and
+## reputation effects (renderReputation). `trade_interval` is the regular trade's interval (빠른 거래 shortens it).
+static func companies_view(data: Dictionary, state: Dictionary, trade_interval: float) -> Dictionary:
+	var research: Dictionary = state.get("completed_research", {})
+	var open_ids := {}
+	for company: Dictionary in _open_companies(data, state):
+		open_ids[company["key"]] = true
+	var rep := reputation(data, state)
+	var thresholds: Array = _rules(data, "delivery").get("SLOT_THRESHOLDS", [0, 5, 15])
+	var slots := 0
+	for threshold: Variant in thresholds:
+		if rep >= int(threshold):
+			slots += 1
+	var companies: Array = data.get("companies", [])
+	slots = clampi(slots, 1, companies.size())
+	var world := _as_dictionary(state.get("world"))
+	var tunnel_open := bool(state.get("tunnel_open", world.get("tunnelUnlocked", false)))
+	var progress_all := _company_progress(data, state)
+	var reserve := float(_rules(data, "delivery").get("TRADE_RESERVE", 10))
+	var inventory: Dictionary = state.get("inventory", {})
+	var cards: Array = []
+	for i in companies.size():
+		var company: Dictionary = companies[i]
+		var id := String(company["key"])
+		var favorites: Array = []
+		for k: String in company["favorites"]:
+			favorites.append(String(_recipe(data, k).get("name", k)))
+		var card := {"id": id, "name": company["name"], "desc": company["desc"], "open": open_ids.has(id), "closed": "",
+			"favorites": favorites, "score": ""}
+		if not card.open:
+			if not bool(research.get("deliveryContract", false)):
+				card.closed = "연구 탭에서 \"납품 계약\"을 연구하면 만날 수 있어요."
+			elif i >= slots:
+				card.closed = "명성 %d점이 되면 거래할 수 있어요. (현재 %d점)" % [int(thresholds[i]), rep]
+			elif bool(company.get("needsTunnel", false)) and not tunnel_open:
+				card.closed = "터널이 뚫려야 닿을 수 있어요. (연구 \"터널 굴착\" 후 공사를 의뢰하세요)"
+			cards.append(card)
+			continue
+		var progress: Dictionary = progress_all[id]
+		var score := "점수 %d / %d" % [floori(float(progress["score"])), int(company["regularScore"])]
+		if float(progress["score"]) >= float(company["regularScore"]):
+			var left := maxf(0.0, trade_interval - float(progress["tradeTimer"]))
+			var product := ""
+			for k: String in company["favorites"]:
+				if float(inventory.get(k, 0)) >= reserve + 1.0:
+					product = k
+					break
+			var when := "%d초 뒤 거래" % ceili(left) if left > 0.0 else ("곧 거래" if not product.is_empty() else "선호 제품을 기다리는 중")
+			score += " · 정기 거래 중 (%s)" % when
+		card.score = score
+		cards.append(card)
+	var effects: Array = []
+	for effect: Dictionary in data.get("reputation_effects", []):
+		var opened := rep >= int(effect.get("unlock", 0))
+		var text := "명성 %d점에서 열려요" % int(effect.get("unlock", 0))
+		if opened:
+			if effect.get("unit") == "multiplier":
+				text = "×%.2f" % reputation_multiplier(data, state)
+			else:
+				var size := reputation_effect(data, state, String(effect["key"]))
+				text = ("-" if effect["key"] == "shippingDiscount" else "+") + "%d%%" % roundi(size * 100.0)
+		effects.append({"name": effect["name"], "text": text, "desc": effect["desc"], "open": opened})
+	return {"companies": cards, "effects": effects}
+
+
+## What a free delivery of `qty` of a product to a company would cost and add (web deliveryPreviewText).
+static func preview(data: Dictionary, state: Dictionary, company_id: String, product: String, qty: int) -> Dictionary:
+	var recipe := _recipe(data, product)
+	var company := _company(data, company_id)
+	if recipe.is_empty() or company.is_empty() or qty <= 0:
+		return {}
+	var progress: Dictionary = _company_progress(data, state)[company_id]
+	return {"cost": _shipping_cost(data, state, company, recipe, qty), "score": _score(data, company, progress, recipe, qty),
+		"have": float(state.get("inventory", {}).get(product, 0))}
 
 
 static func _shipping_cost(data: Dictionary, state: Dictionary, company: Dictionary, recipe: Dictionary, qty: int) -> int:

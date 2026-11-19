@@ -14,6 +14,12 @@ var _bar: PanelContainer
 var _gold: Label
 var _inventory_button: Button
 var _action: Button
+## The phone's torch button (web tdTorchNow): next to the action button on touch screens, in the world.
+var _torch: Button
+var _torch_callback := Callable()
+## The garden button (web tdDecor): "장식 회수" or "다음 장식" near the garden.
+var _garden: Button
+var _garden_callback := Callable()
 var _action_label := ""
 var _action_callback := Callable()
 var _context_hint: Label
@@ -116,6 +122,8 @@ func close_workshop() -> void:
 	_bar.show()
 	_save_indicator.show()
 	_action.visible = not _action_label.is_empty()
+	_torch.visible = _torch_callback.is_valid()
+	_garden.visible = not _garden.text.is_empty()
 	_context_hint.visible = not _context_hint_text.is_empty()
 
 func is_workshop_open() -> bool:
@@ -127,6 +135,19 @@ func set_action(label: String, callback: Callable = Callable()) -> void:
 	if is_instance_valid(_action):
 		_action.text = label
 		_action.visible = not label.is_empty() and not is_workshop_open()
+
+## Shows the garden button with `label` ("" hides it); pressing it calls `callback`.
+func set_garden(label: String, callback: Callable = Callable()) -> void:
+	_garden_callback = callback
+	if is_instance_valid(_garden):
+		_garden.text = label
+		_garden.visible = not label.is_empty() and not is_workshop_open()
+
+## Shows the torch button on touch screens while `callback` is valid (the world map), hides it otherwise.
+func set_torch(callback: Callable) -> void:
+	_torch_callback = callback if DisplayServer.is_touchscreen_available() else Callable()
+	if is_instance_valid(_torch):
+		_torch.visible = _torch_callback.is_valid() and not is_workshop_open()
 
 func set_context_hint(message: String) -> void:
 	_context_hint_text = message
@@ -162,6 +183,8 @@ func _open(only_inventory: bool) -> void:
 	_bar.hide()
 	_save_indicator.hide()
 	_action.hide()
+	_torch.hide()
+	_garden.hide()
 	_context_hint.hide()
 	_toast.hide()
 	_overlay.show()
@@ -198,6 +221,22 @@ func _build_bar(surface: Control) -> void:
 	contents.add_child(_inventory_button)
 	_action = _button("", _activate_context)
 	surface.add_child(_action)
+	_garden = _button("", func() -> void: if _garden_callback.is_valid(): _garden_callback.call())
+	_garden.hide()
+	surface.add_child(_garden)
+	_garden.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	_garden.offset_left = -164
+	_garden.offset_top = -74
+	_garden.offset_right = -8
+	_garden.offset_bottom = -44
+	_torch = _button("횃불", func() -> void: if _torch_callback.is_valid(): _torch_callback.call())
+	_torch.hide()
+	surface.add_child(_torch)
+	_torch.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	_torch.offset_left = -164
+	_torch.offset_top = -38
+	_torch.offset_right = -116
+	_torch.offset_bottom = -8
 	_action.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
 	_action.offset_left = -112
 	_action.offset_top = -38
@@ -323,7 +362,7 @@ func _refresh(force := false) -> void:
 	if not force and focused is LineEdit and focused.has_meta("craft_target"):
 		return
 	if not force:
-		if _active_tab in [TAB_WORKERS, TAB_CRAFT]:
+		if _active_tab in [TAB_WORKERS, TAB_CRAFT, TAB_DELIVERY]:
 			for picker in _worker_pickers:
 				if picker.get_popup().visible:
 					return
@@ -356,7 +395,15 @@ func _refresh(force := false) -> void:
 		if output != id and not _names.has(output):
 			_names[output] = _names[id]
 	match _active_tab:
-		TAB_INVENTORY: _render_inventory(inventory)
+		TAB_INVENTORY:
+			_render_inventory(inventory)
+			if not _log.is_empty():
+				_rows.add_child(_label("기록", 12))
+				for line in _log:
+					var entry := _label(line, 10)
+					entry.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+					entry.add_theme_color_override("font_color", MUTED)
+					_rows.add_child(entry)
 		TAB_MINING: _render_mining(state.get("mining", {}), str(state.get("hint", "")), inventory, gold)
 		TAB_CRAFT:
 			var auto_unlocked := bool(state.get("completed_research", {}).get("autoCraftDevice", false))
@@ -369,8 +416,11 @@ func _refresh(force := false) -> void:
 		TAB_RESEARCH:
 			_render_tunnel(state.get("tunnel", {}), state.get("completed_research", {}), inventory, gold)
 			_render_research(state.get("research", []), state.get("completed_research", {}), inventory, gold)
-		TAB_DELIVERY: _render_deliveries(state.get("deliveries", state.get("delivery_offers", [])), int(state.get("reputation", 0)))
-		TAB_VILLAGE: _render_village(state.get("village", {}), inventory, gold)
+		TAB_DELIVERY: _render_deliveries(state.get("deliveries", state.get("delivery_offers", [])), int(state.get("reputation", 0)),
+			state.get("companies", {}), recipes, float(state.get("multiplier", 1.0)))
+		TAB_VILLAGE:
+			_render_village(state.get("village", {}), inventory, gold)
+			_render_garden(state.get("garden", {}))
 		TAB_SAVE: _render_save()
 	if _rows.get_child_count() == 0:
 		_rows.add_child(_label("가방에 아이템이 없어요." if _active_tab == TAB_INVENTORY else "지금 가능한 항목이 없어요.", 11))
@@ -383,7 +433,8 @@ func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: 
 	if _active_tab == TAB_WORKERS:
 		return JSON.stringify([floorf(gold), state.get("workers", []), state.get("worker_details", []), state.get("resources", []), state.get("last_pull", ""), state.get("worker_cap", 0)])
 	if _active_tab == TAB_DELIVERY:
-		return JSON.stringify([state.get("reputation", 0), state.get("deliveries", state.get("delivery_offers", []))])
+		return JSON.stringify([state.get("reputation", 0), state.get("deliveries", state.get("delivery_offers", [])), state.get("companies", {}),
+			_ship_choice, floorf(float(state.get("gold", 0)))])
 	var visible_quantities := {}
 	for id in inventory:
 		var quantity := floorf(float(inventory[id]))
@@ -397,7 +448,7 @@ func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: 
 	var automation: Dictionary = state.get("automation", {})
 	var completed: Dictionary = state.get("completed_research", {})
 	match _active_tab:
-		TAB_INVENTORY: return JSON.stringify(shown_quantities)
+		TAB_INVENTORY: return JSON.stringify([shown_quantities, _log.size(), _log.front() if not _log.is_empty() else ""])
 		TAB_MINING: return JSON.stringify([state.get("mining", {}), state.get("hint", ""), floorf(gold)])
 		TAB_CRAFT:
 			var remaining := []
@@ -411,7 +462,7 @@ func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: 
 			return JSON.stringify([visible_quantities, automation, completed, remaining, huts, state.get("huts", {}).get("block", ""), state.get("upgrades", []), floorf(gold)])
 		TAB_SELL: return JSON.stringify([shown_quantities, automation, gold])
 		TAB_RESEARCH: return JSON.stringify([state.get("tunnel", {}), visible_quantities, completed, floorf(gold)])
-		TAB_VILLAGE: return JSON.stringify([visible_quantities, state.get("village", {}), gold])
+		TAB_VILLAGE: return JSON.stringify([visible_quantities, state.get("village", {}), state.get("garden", {}), floorf(gold)])
 	return str(_active_tab)
 
 func _render_inventory(inventory: Dictionary) -> void:
@@ -475,6 +526,29 @@ func _render_huts(huts: Dictionary, recipes: Array, inventory: Dictionary, gold:
 		if block == "spot":
 			details += " · 공방 주변에 빈 자리가 없어요"
 		_add_row("제작소 짓기", details, "짓기", "build_hut", "build_hut", block.is_empty())
+	# web bottleneckHtml: which huts stand idle and what they lack
+	if not list.is_empty():
+		var idle: Array = huts.get("idle", [])
+		if idle.is_empty():
+			_rows.add_child(_label("모든 제작소가 일하고 있어요.", 10))
+		else:
+			var missing: Array = huts.get("missing", [])
+			if not missing.is_empty():
+				var names := PackedStringArray()
+				for m: Dictionary in missing:
+					names.append("%s (%d곳)" % [m.name, int(m.huts)])
+				_rows.add_child(_label("가장 필요한 재료: " + ", ".join(names), 10))
+			for w: Dictionary in idle:
+				var why: String = {"noRecipe": "레시피를 정하지 않았어요", "waiting": "재료는 있지만 제작을 시작하지 않았어요",
+					"full": "목표 재고에 도달해 쉬고 있어요"}.get(str(w.status), "")
+				if str(w.status) == "blocked":
+					var parts := PackedStringArray()
+					for sh: Dictionary in w.shortages:
+						parts.append("%s %d개 부족" % [_name_for(str(sh.id)), int(float(sh.need) - float(sh.have))])
+					why = "%s — %s" % [_name_for(str(w.recipe)), ", ".join(parts)]
+				var line := _label("제작소 %d: %s" % [int(w.number), why], 10)
+				line.add_theme_color_override("font_color", MUTED)
+				_rows.add_child(line)
 	var options: Array = []
 	for recipe in recipes:
 		options.append(recipe)
@@ -654,19 +728,92 @@ func _render_research(research: Array, completed: Dictionary, inventory: Diction
 				break
 		_add_row(title, details, "연구", "unlock", id, ready)
 
-func _render_deliveries(deliveries: Array, reputation: int) -> void:
-	_rows.add_child(_label("납품 평판 %d" % reputation, 11))
-	if deliveries.is_empty():
-		_rows.add_child(_label("지금 가능한 납품이 없어요.", 11))
-	for delivery in deliveries:
-		var id := _item_id(delivery)
-		var product_id := str(delivery.get("product", ""))
-		var description := "%s %d개 · 배송비 %d G · 보상 %d G" % [
-			str(delivery.get("product_name", _name_for(product_id))), int(delivery.get("qty", 0)),
-			int(delivery.get("shipping_cost", 0)), int(delivery.get("gold_reward", 0)),
-		]
-		var company := str(delivery.get("company_name", delivery.get("company_id", "납품")))
-		_add_row(company, description, "납품", "deliver", id, bool(delivery.get("can_complete", false)))
+## Free delivery choices per company (product and quantity), kept while the tab redraws.
+var _ship_choice := {}
+
+## The 납품 tab (web renderReputation, renderDelivery): reputation and its effects, then one card per company with
+## its open orders and free delivery.
+func _render_deliveries(deliveries: Array, reputation: int, view: Dictionary = {}, recipes: Array = [], multiplier := 1.0) -> void:
+	_rows.add_child(_label("명성 %d · 현재 배율 ×%.2f" % [reputation, multiplier], 12))
+	for effect: Dictionary in view.get("effects", []):
+		var line := _label("%s %s — %s" % [effect.name, effect.text, effect.desc], 10)
+		line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		line.add_theme_color_override("font_color", PAPER if effect.open else MUTED)
+		_rows.add_child(line)
+	if view.is_empty():
+		for delivery in deliveries:
+			_render_order(delivery)
+		return
+	for card: Dictionary in view.get("companies", []):
+		var actions := _add_row(str(card.name), str(card.desc) + ("" if card.open else "\n" + str(card.closed)))
+		if not card.open:
+			continue
+		var info := _label("%s\n좋아하는 것: %s (★ 점수 ×1.5)" % [card.score, ", ".join(PackedStringArray(card.favorites))], 10)
+		info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		info.add_theme_color_override("font_color", MUTED)
+		_rows.add_child(info)
+		for delivery in deliveries:
+			if str(delivery.get("company_id", "")) == str(card.id):
+				_render_order(delivery)
+		_render_free_delivery(card, recipes, actions)
+
+func _render_order(delivery: Dictionary) -> void:
+	var id := _item_id(delivery)
+	var product_id := str(delivery.get("product", ""))
+	var reward := "명성 +%d" % int(delivery.get("reputation", 0)) if int(delivery.get("index", -1)) >= 0 \
+		else "보상 %s G" % format_quantity(float(delivery.get("gold_reward", 0)))
+	var description := "%s %d개 · 배송비 %d G · %s" % [
+		str(delivery.get("product_name", _name_for(product_id))), int(delivery.get("qty", 0)), int(delivery.get("shipping_cost", 0)), reward]
+	_add_row("수주 · " + str(delivery.get("company_name", "")), description, "납품", "deliver", id, bool(delivery.get("can_complete", false)))
+
+func _render_free_delivery(card: Dictionary, recipes: Array, actions: VBoxContainer) -> void:
+	var id := str(card.id)
+	var choice: Dictionary = _ship_choice.get(id, {})
+	var keys := PackedStringArray()
+	var picker := OptionButton.new()
+	picker.custom_minimum_size = Vector2(96, 26)
+	for recipe in recipes:
+		if bool(recipe.get("locked", false)):
+			continue
+		var key := _item_id(recipe)
+		keys.append(key)
+		picker.add_item(_name_for(key) + (" ★" if _name_for(key) in card.favorites else ""))
+	if keys.is_empty():
+		picker.free()
+		return
+	var product: String = choice.get("product", keys[0])
+	if not keys.has(product):
+		product = keys[0]
+	var qty := int(choice.get("qty", 1))
+	picker.select(keys.find(product))
+	picker.set_meta("row_id", "ship_product:" + id)
+	picker.item_selected.connect(func(index: int) -> void:
+		_ship_choice[id] = {"product": keys[index], "qty": qty}
+		_refresh(true))
+	picker.get_popup().popup_hide.connect(_schedule_refresh)
+	_worker_pickers.append(picker)
+	actions.add_child(picker)
+	var field := LineEdit.new()
+	field.custom_minimum_size = Vector2(60, 25)
+	field.max_length = 6
+	field.text = str(qty)
+	field.set_meta("target_input", true)
+	field.text_submitted.connect(func(_t: String) -> void: field.release_focus())
+	field.focus_exited.connect(func() -> void:
+		var n := clampi(int(field.text) if field.text.is_valid_int() else 1, 1, 999999)
+		_ship_choice[id] = {"product": product, "qty": n}
+		_schedule_refresh())
+	actions.add_child(field)
+	var preview: Dictionary = _workshop.call("delivery_preview", id, product, qty)
+	if not preview.is_empty():
+		var text := _label("보유 %s개 · 배송비 %d G · 점수 +%s" % [format_quantity(float(preview.have)), int(preview.cost), format_quantity(float(preview.score))], 9)
+		text.add_theme_color_override("font_color", MUTED)
+		actions.add_child(text)
+	var send := _button("자유 납품", func() -> void:
+		_workshop.call("ship_free", id, product, qty)
+		_schedule_refresh())
+	send.disabled = preview.is_empty() or float(preview.have) < qty
+	actions.add_child(send)
 
 func _render_upgrades(upgrades: Array, inventory: Dictionary, gold: float) -> void:
 	if upgrades.is_empty():
@@ -715,6 +862,30 @@ func _render_village(village: Dictionary, inventory: Dictionary, gold: float) ->
 		else:
 			_add_row(title, "%d개 필요" % specimen.quantity, "기증", "donate_specimen", specimen.id,
 				float(inventory.get(specimen.id, 0)) >= float(specimen.quantity))
+
+## The garden's decorations to choose from and the museum's collection rewards (web villageGardenCard,
+## villageRewardSection).
+func _render_garden(garden: Dictionary) -> void:
+	if garden.is_empty():
+		return
+	_rows.add_child(_label("정원 · 장식 %d / %d칸" % [int(garden.placed), int(garden.cells)], 12))
+	var tip := _label("정원 칸 앞에서 E로 놓고, 다시 E로 들어 옮겨요. R은 회수, Q는 다음 장식이에요." if garden.has_garden else "마을 광장 자리를 찾는 중이에요.", 10)
+	tip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tip.add_theme_color_override("font_color", MUTED)
+	_rows.add_child(tip)
+	for kind: Dictionary in garden.kinds:
+		var title := ("▶ " if kind.selected else "") + str(kind.name)
+		_add_row(title, str(kind.desc) if kind.unlocked else "박물관 보상으로 해금돼요.", "고르기", "decor_select", str(kind.id),
+			bool(kind.unlocked) and not bool(kind.selected))
+	_rows.add_child(_label("수집 보상 · 수집 %d / %d" % [int(garden.collected), int(garden.total)], 12))
+	for r: Dictionary in garden.rewards:
+		var line := _label("%s%d점 %s" % ["✓ " if r.earned else "", int(r.need), r.name], 10)
+		line.add_theme_color_override("font_color", Color("f1c577") if r.earned else MUTED)
+		_rows.add_child(line)
+	var note := _label("박물관 보상은 골드를 주지 않아요. 연구 보너스는 연구의 골드 비용에만 적용돼요.", 10)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.add_theme_color_override("font_color", MUTED)
+	_rows.add_child(note)
 
 func _render_save() -> void:
 	if not _workshop.has_method("import_save"):
@@ -1127,7 +1298,14 @@ func _rerender_save_tab() -> void:
 	_save_input = null
 	_refresh(true)
 
+## The last messages, newest first (web log(): the 기록 list keeps 40).
+var _log: Array[String] = []
+
 func _show_feedback(message: String) -> void:
+	if not message.is_empty():
+		_log.push_front(message)
+		if _log.size() > 40:
+			_log.resize(40)
 	if not is_node_ready():
 		return
 	if is_workshop_open():

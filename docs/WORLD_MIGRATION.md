@@ -70,23 +70,23 @@ CI: `.github/workflows/world-qa.yml` (claude/** 푸시). 기존 `--route-test`(R
 4. **채굴**: 월드 지도에서 발견한 광맥 앞 **E** → `Game.workshop.mine(resource)`를 부릅니다(잠금 판정은 공방 쪽 그대로). 광맥별 `developmentState`/등급 효과는 아직 공방에 넘기지 않습니다.
 5. **HUD**: 월드 지도는 화면 왼쪽 아래에 `World/WorldUI/Region`(지역·광맥 수·E 안내)과 `Toast`를 직접 그립니다. HUD로 옮기려면 `world_map.gd`의 `_physics_process` 문구를 `Game._hud`로 넘기면 됩니다.
 
-## 초기 이관 누락 목록
+## 초기 이관 누락 목록 → 현재 상태 (2026-11-19, 전체 대조는 `docs/FEATURE_PARITY.md`)
 
 | 항목 | 원본 | 상태 |
 |---|---|---|
-| 마을 바닥(광장·길·정원)과 마을 시설 벽 | `village.js`, tdTileAt `village` | 미이관. `tile_at`은 마을 없이 공방 마당·터널 길만 그림 |
-| 공방 증축(제작소 오두막) 위치와 벽 | `state.world.workshops` | 데이터·경제 이관(`scripts/craft_huts.gd`). 월드 지도에 그리기와 벽 충돌은 미이관 |
-| 횃불·조명 | `state.world.torches`, `topdown/light.js` | 미이관 |
-| 일꾼 길찾기(A*)·광맥까지 걷기 | `worldnavigation.js`, `topdown/workers.js` | 미이관 |
-| 탐색 지도(미니맵) | `topdown/render.js` 미니맵 | 미이관. 지역 이름·발견 수 표시만 |
-| 터널 공사 의뢰·타이머 | `factory.js` orderTunnelWork | 공방 쪽 담당. 연결 지점 2 |
-| 거점 확장 시 기본 광맥 추가 | `WORLD_MINE_SEEDS`, expandBase | 자리만 비워 둠(생성기가 피함). 추가 자체는 경제 쪽 |
-| 저장/불러오기 | `save-runtime.js` | 형태만 준비(to_dict/from_dict). 연결 지점 1 |
-| 정밀 이동 규칙 | `PLAYER_MARGIN 0.3`, `CORNER_SLIP`, 발 상자 0.18×0.12 | Godot 충돌로 근사: 타일 단위 벽 + 플레이어 발 10×6px. 순수 판정 `is_point_walkable`은 웹과 동일(테스트됨) |
-| 이동 속도 | 웹 3단위/초 | `player.gd` 72px/s = 1.125단위/초(파일 소유자 결정 필요) |
-| 고해상도 스프라이트·스타일 v2 | `topdown/sprites.js`, `hires.js`, `style.js` | 임시 도형으로 그림 |
-| 256 시험 월드의 시험 패널·순간이동·별도 저장 키 | `worldchunks.js` worldTestControls | 미이관. `seeded_world` 내보내기 값으로만 켬 |
-| 공방 앞 1단계 맵과 월드 지도 열린 땅의 관계 | — | **결정 필요**: 1단계 overworld를 월드 지도 열린 땅으로 대체할지, 지금처럼 두 화면을 문으로 이을지. `workshop_world.gd`의 고정 광맥 좌표와 `WorldState` 광맥도 이때 하나로 맞춰야 함 |
+| 마을 바닥(광장·길·정원)과 마을 시설 벽 | `village.js` | 이관(`scripts/village_layout.gd`, `world_objects.gd`). 배치·도로는 원본과 점 단위 일치 |
+| 제작소 오두막 위치와 벽 | `state.world.workshops` | 이관: 그리기·충돌·E로 카드 |
+| 횃불·조명 | `state.world.torches`, `topdown/light.js` | 이관: T 키·터치 버튼, 해질녘 순환과 2D 빛. 구름·반딧불은 미이관 |
+| 일꾼 광맥까지 걷기 | `topdown/workers.js` | 이관(`world_workers.gd`). 256 시험 월드의 A*(`worldnavigation.js`)는 시험 월드 전용이라 제외 |
+| 탐색 지도(미니맵) | `topdown/render.js` | 이관(`world_minimap.gd`) |
+| 터널 공사 의뢰·타이머 | `factory.js` | 이관: 실시간 공사(게임을 꺼도 진행) |
+| 거점 확장 시 기본 광맥 추가 | `WORLD_MINE_SEEDS`, expandBase | 이관 |
+| 저장/불러오기 | `save-runtime.js` | 연결됨. S2의 마을 여러 개·수동 슬롯 5개는 미이관(디렉터 결정 필요) |
+| 정밀 이동 규칙 | `PLAYER_MARGIN 0.3`, `CORNER_SLIP` | Godot 충돌로 근사. 순수 판정 `is_point_walkable`은 웹과 동일 |
+| 이동 속도 | 웹 3단위/초 | 192px/s = 3단위/초로 맞춤 |
+| 고해상도 스프라이트·스타일 v2 | `topdown/sprites.js`, `hires.js`, `style.js` | 코드로 그린 도형. 후속 그래픽 단계 |
+| 256 시험 월드의 시험 패널·순간이동·별도 저장 키 | `worldchunks.js` | 미이관(시험 전용) |
+| 공방 앞 1단계 맵과 월드 지도 | — | 통합 월드 지도가 기본. 1단계 overworld/tunnel은 회귀 시험용으로 보존 |
 
 ## 웹과 다른 점
 

@@ -820,7 +820,13 @@ func _huts_snapshot() -> Dictionary:
 			"progress": hut.progress if hut.progress != null else 0.0, "status": st.state, "shortages": st.shortages,
 			"upgrade": CraftHuts.upgrade_cost(data, hut)})
 	var count: int = world.workshops.size()
+	# web bottleneckReport: the huts standing idle and the items the stuck ones lack, most needed first.
+	var idle: Array = []
+	for item: Dictionary in list:
+		if item.status != "working":
+			idle.append({"number": item.number, "status": item.status, "recipe": item.recipe, "shortages": item.shortages})
 	return {"list": list, "max": CraftHuts.max_count(data, state.completed_research), "block": hut_build_block(),
+		"idle": idle, "missing": bottleneck_items().slice(0, 3),
 		"cost": {"gold": CraftHuts.build_cost(data, count), "products": CraftHuts.build_products(data, count)}}
 
 func snapshot() -> Dictionary:
@@ -860,7 +866,9 @@ func snapshot() -> Dictionary:
 		"completed_research": state.completed_research, "stats": state.stats, "automation": state.automation,
 		"tunnel": {"open": world.tunnel_unlocked, "remaining": ceili(maxf(0.0, tunnel_remaining_sec())), "building": not world.tunnel_contract.is_empty(), "cost": data.balance.tunnel},
 		"sites": sites, "upgrades": _upgrade_options(), "huts": _huts_snapshot(), "mining": _mining_snapshot(),
-		"hint": next_hint(), "worker_cap": worker_cap(), "last_pull": _last_pull_text(), "deliveries": Delivery.offers(data, state),
+		"hint": next_hint(), "worker_cap": worker_cap(), "last_pull": _last_pull_text(), "garden": _garden_snapshot(),
+		"companies": Delivery.companies_view(data, state, float(data.balance.research.TRADE_INTERVAL_SEC) if state.completed_research.get("fastTrade", false)
+			else float(data.balance.delivery.TRADE_INTERVAL_SEC)), "multiplier": _multiplier(), "deliveries": Delivery.offers(data, state),
 		"reputation": Delivery.reputation(data, state), "village": Village.snapshot(data, state.village), "save_error": _save_error}
 
 func _worker_effective(worker: Dictionary) -> float:
@@ -1231,13 +1239,17 @@ func decor_selected() -> String:
 		garden_ui.selected = data.village.DECOR[0].key
 	return garden_ui.selected
 
-## The next unlocked decoration kind (web villageDecorCycle, Q).
-func decor_cycle(_id := "") -> String:
+## The unlocked decoration kind after the selected one (web villageDecorNext).
+func decor_next() -> String:
 	var keys: Array = []
 	for d: Dictionary in data.village.DECOR:
 		if decor_unlocked(d.key):
 			keys.append(d.key)
-	garden_ui.selected = keys[(keys.find(decor_selected()) + 1) % keys.size()]
+	return keys[(keys.find(decor_selected()) + 1) % keys.size()]
+
+## Selects the next unlocked decoration kind (web villageDecorCycle, Q).
+func decor_cycle(_id := "") -> String:
+	garden_ui.selected = decor_next()
 	changed.emit()
 	return garden_ui.selected
 
@@ -1336,6 +1348,19 @@ func decor_remove(cell: int) -> String:
 	_updated(VillageLayout.decor_def(kind).name + " 회수")
 	return kind
 
+## The 마을 tab's garden and museum rewards (web villageGardenCard, villageRewardSection).
+func _garden_snapshot() -> Dictionary:
+	var kinds: Array = []
+	for d: Dictionary in data.village.DECOR:
+		kinds.append({"id": d.key, "name": d.name, "desc": d.desc, "unlocked": decor_unlocked(d.key), "selected": d.key == decor_selected()})
+	var collected := int(state.village.donated.size()) + Village.specimen_keys(state.village).size()
+	var rewards: Array = []
+	for r: Dictionary in data.village_museum_rewards:
+		rewards.append({"need": r.need, "name": r.name, "earned": collected >= int(r.need)})
+	return {"has_garden": state.village.get("district") is Dictionary, "placed": state.village.decor.size(),
+		"cells": int(data.village.GARDEN.COLS) * int(data.village.GARDEN.ROWS), "kinds": kinds, "collected": collected,
+		"total": data.village_relics.size() + data.village_specimens.size(), "rewards": rewards}
+
 var _roads_key := ""
 var _roads: Array = []
 
@@ -1356,59 +1381,68 @@ func village_roads() -> Array:
 ## Picks up the torch at hand or sets one down in front of the player. `feet` in world units, `facing` up/down/
 ## left/right. Returns {ok, text}.
 func torch_act(feet: Vector2, facing: String) -> Dictionary:
+	# Vector2 holds 32-bit floats: the spot is worked out in doubles so it is saved like the web's (3.56, not 3.5599999).
 	var T: Dictionary = data.torch
-	var v: Vector2 = {"up": Vector2(0, -1), "down": Vector2(0, 1), "left": Vector2(-1, 0), "right": Vector2(1, 0)}.get(facing, Vector2(0, 1))
-	var spot := Vector2(VillageLayout._round((feet.x + v.x * T.AHEAD) * 100.0) / 100.0, VillageLayout._round((feet.y + v.y * T.AHEAD) * 100.0) / 100.0)
-	var near := _nearest_torch(spot, float(T.PICK_AHEAD))
+	var v: Array = {"up": [0.0, -1.0], "down": [0.0, 1.0], "left": [-1.0, 0.0], "right": [1.0, 0.0]}.get(facing, [0.0, 1.0])
+	var fx := _js_hundredths(feet.x)
+	var fy := _js_hundredths(feet.y)
+	var sx := VillageLayout._round((fx + v[0] * float(T.AHEAD)) * 100.0) / 100.0
+	var sy := VillageLayout._round((fy + v[1] * float(T.AHEAD)) * 100.0) / 100.0
+	var near := _nearest_torch(sx, sy, float(T.PICK_AHEAD))
 	if near < 0:
-		near = _nearest_torch(feet, float(T.PICK_UNDER))
+		near = _nearest_torch(fx, fy, float(T.PICK_UNDER))
 	if near >= 0:
 		world.torches.remove_at(near)
 		_village_try_key = ""
 		_record_world()
 		_updated("횃불을 거뒀어요")
 		return {"ok": true, "text": "횃불을 거뒀어요"}
-	var why := torch_problem(spot)
+	var why := torch_problem(sx, sy)
 	if not why.is_empty():
 		feedback.emit(why)
 		return {"ok": false, "text": why}
-	world.torches.append({"x": spot.x, "y": spot.y})
+	world.torches.append({"x": sx, "y": sy})
 	_record_world()
 	_updated("횃불을 놓았어요")
 	return {"ok": true, "text": "횃불을 놓았어요"}
 
-func _nearest_torch(at: Vector2, reach: float) -> int:
+## A player position (a 32-bit Vector2 component) as the double nearest its value to 1e-6, so a position like
+## 228 / 64 = 3.5625 stays exact and a 32-bit rounding error does not reach the torch spot.
+func _js_hundredths(v: float) -> float:
+	return VillageLayout._round(v * 1e6) / 1e6
+
+func _nearest_torch(x: float, y: float, reach: float) -> int:
 	var best := -1
 	var best_d := reach
 	for i in world.torches.size():
-		var d := at.distance_to(Vector2(world.torches[i].x, world.torches[i].y))
+		var d := VillageLayout._hypot(float(world.torches[i].x) - x, float(world.torches[i].y) - y)
 		if d <= best_d:
 			best = i
 			best_d = d
 	return best
 
 ## Why a torch cannot go at `at` (web torchPlaceProblem), or "".
-func torch_problem(at: Vector2) -> String:
+func torch_problem(x: float, y: float) -> String:
 	var T: Dictionary = data.torch
 	if world.torches.size() >= int(T.MAX):
 		return "횃불은 %d개까지 놓을 수 있어요" % int(T.MAX)
-	if not WorldTerrainScript.is_point_walkable(at.x, at.y, world.tunnel_unlocked):
+	if not WorldTerrainScript.is_point_walkable(x, y, world.tunnel_unlocked):
 		return "여기에는 놓을 수 없어요"
 	for m: Dictionary in world.mines:
-		if Vector2(m.x, m.y).distance_to(at) < T.MINE_CLEAR:
+		if VillageLayout._hypot(float(m.x) - x, float(m.y) - y) < T.MINE_CLEAR:
 			return "광맥과 너무 가까워요"
-	var doors: Array = [Vector2(world.base)]
+	var doors: Array = [[float(world.base.x), float(world.base.y)]]
 	for w: Dictionary in world.workshops:
-		doors.append(Vector2(w.x, w.y))
-	for d: Vector2 in doors:
-		if d.distance_to(at) < T.DOOR_CLEAR:
+		doors.append([float(w.x), float(w.y)])
+	for d: Array in doors:
+		if VillageLayout._hypot(d[0] - x, d[1] - y) < T.DOOR_CLEAR:
 			return "문 앞은 비워 둘게요"
 	var r: float = T.ROOM
 	for o: Dictionary in VillageLayout.obstacles(world, state.village, int(garden_ui.carry)):
-		if at.x > o.minX - r and at.x < o.maxX + r and at.y > o.minY - r and at.y < o.maxY + r:
+		if x > o.minX - r and x < o.maxX + r and y > o.minY - r and y < o.maxY + r:
 			return "건물이나 바위에 너무 가까워요"
 	for t: Dictionary in world.torches:
-		if Vector2(t.x, t.y).distance_to(at) < T.GAP:
+		if VillageLayout._hypot(float(t.x) - x, float(t.y) - y) < T.GAP:
 			return "횃불끼리 너무 가까워요"
 	return ""
 
@@ -1533,6 +1567,17 @@ func set_auto_sell(id: String, enabled: bool) -> bool:
 		return false
 	state.automation.sell[id] = enabled
 	return _updated()
+
+## Free delivery of `qty` of a product to a company (web deliverProducts): pays shipping, adds score.
+func ship_free(company_id: String, product: String, qty: int) -> bool:
+	var result := Delivery.ship(data, state, company_id, product, qty)
+	if not result.get("ok", false):
+		return _reject(result.get("message", "납품할 수 없어요."))
+	_check_first_ticket()
+	return _updated(result.get("message", "납품 완료"))
+
+func delivery_preview(company_id: String, product: String, qty: int) -> Dictionary:
+	return Delivery.preview(data, state, company_id, product, qty)
 
 func deliver(id: String) -> bool:
 	var result := Delivery.complete(data, state, id)

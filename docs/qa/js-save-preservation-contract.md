@@ -38,16 +38,16 @@ Godot PR #1 `f14d45d` + 1차 수정 브랜치 `claude/feature-parity-p0`.
 | `run.autoCraft` · `autoSell` · `autoSellOn` · `craftTarget` | 예 | 예 | `automation.craft/sell_owned/sell/target`. 자동 판매는 workshopOnly 레시피만 제외 |
 | `run.craftQueue` | 예 | 예 | `queue` (남은 초) |
 | `run.hqLevel` · `craftFacility` · `facility` · `workforce` | 예 | 예 | 같은 이름의 Godot 키 |
-| `run.lastPull` · `run.autoLineLogged` | 예 | 아니요 | 화면 표시용 기록. 게임 진행에 영향 없음 |
+| `run.lastPull` · `run.autoLineLogged` | 예 | 예 | `last_pull`, `auto_line_logged` |
 | `run.world.base` · `mines` · `hiddenMineIds` · `tunnelUnlocked` | 예 | 예 | `world` (`WorldState.from_dict`) |
 | `run.world.workshops[]` (`id, x, y, level, recipeKey, auto, progress`) | 예 | 예 | `world.workshops` (같은 모양, `sanitizeWorkshops` 규칙). 제작소 이전 Godot 저장(`world`에 `workshops` 없음)은 원본에서 다시 복원. Godot 저장에 목록이 있으면 그것이 우선. 제작소·자동 제작이 쓰이고 있으면 해당 연구 완료로 봄(`researchSyncFromState`) |
-| `run.world.torches[]` (`x, y`) | 예 | **아니요** | 횃불 미이식 |
-| `run.world.player` (`x, y, facing`) | 예 | **아니요** | 가져오면 공방 앞에서 시작. JS 격자 좌표와 Godot 픽셀 좌표 변환 규칙 미정 |
-| `run.world.tunnelContract` (`startedAt, durationSec`) | 예 | **아니요** | 진행 중 터널 공사가 이어지지 않음. `tunnelUnlocked: true`면 개통 상태는 복원됨 |
+| `run.world.torches[]` (`x, y`) | 예 | 예 | `world.torches` (`sanitizeTorches`). 이전 Godot 저장은 원본에서 복원 |
+| `run.world.player` (`x, y, facing`) | 예 | 예 | 1단위 = 64px로 `position`에 복원(걸을 수 없는 자리면 공방 앞). 바라보는 방향은 미복원 |
+| `run.world.tunnelContract` (`startedAt, durationSec`) | 예 | 예 | `world.tunnelContract`. 원본처럼 실시간으로 진행(게임을 꺼도 진행) |
 | `run.village.stage` · `unidentified` · `digProgress` · `appraised` · `owned` · `codex` · `donated` · `specimens` | 예 | 예 | `village` (`Village.load_progress`) |
-| `run.village.sites` (시설 좌표) | 예 | **아니요** | 마을 배치 미이식 |
-| `run.village.district` (`x, y, layout`) | 예 | **아니요** | 마을 구역 배치 미이식 |
-| `run.village.decor[]` (`kind, cell`) | 예 | **아니요** | 정원 장식 미이식 |
+| `run.village.sites` (시설 좌표) | 예 | 예 | `village.sites`. 없으면 원본 규칙으로 배치 |
+| `run.village.district` (`x, y, layout`) | 예 | 예 | `village.district`. 없으면 원본 규칙으로 배치 |
+| `run.village.decor[]` (`kind, cell`) | 예 | 예 | `village.decor` (`sanitizeVillageDecor`) |
 | `permanent.tickets` · `firstGachaGranted` | 예 | 예 | `tickets`, `first_ticket` |
 | `permanent.totalPrestige` · `companies` | 예 | 예 | `delivery.reputation`, `delivery.companies` |
 | `permanent.runCount` | 예 | 아니요 | 회차 기능 미이식 |
@@ -85,6 +85,6 @@ JS 저장 파일을 `파일에서 가져오기`로 다시 가져와야 한다. 1
 2. 복원은 한 번만: 새 Godot 키가 이미 있으면 그것이 우선이다 (`characters`가 있으면 legacy 일꾼을 다시 넣지 않는 현재 방식과 같음).
 3. JS sanitize 규칙(`sanitizeWorkshops`, `sanitizeTorches`, `sanitizeTunnelContract`, `sanitizeVillageDecor/District/Site`,
    `sanitizePlayer`)을 그대로 이식하고, 잘못된 항목만 버린다.
-4. `tunnelContract.startedAt`은 벽시계(ms) 기준이다. 복원 시 남은 시간을 `durationSec - (지금 - startedAt)/1000`로 계산할지,
-   가져온 시점부터 다시 셀지 정해야 한다 — 결정 필요.
+4. `tunnelContract.startedAt`은 벽시계(ms) 기준이다. 원본과 같이 `durationSec - (지금 - startedAt)/1000`로 계산한다(시작 시각이
+   미래면 지금으로 옮김). 이전 Godot 빌드의 `tunnel_remaining`은 남은 시간 그대로 이 형태로 바꾼다.
 5. 제작소 전용 레시피(workshopOnly) 제작 제한은 제작소 건물 복원과 함께 켠다. → 제작소 단계에서 켰다(`WORKSHOP_ONLY_IN_HUTS`). 레시피 카드에서 이미 돌던 제작은 끝까지 진행된다.
