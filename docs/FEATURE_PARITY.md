@@ -69,7 +69,7 @@ Godot: `Bellsier/mining-workshop-godot` 브랜치 `claude/modest-mendel-yvz6iv` 
 | 터널 공사: 실시간(종료 중에도 진행), 시계를 되돌리면 지금부터 | factory.js `tunnelContract` | 완료 | `_tick_tunnel` · world_integration_test |
 | 상호작용 대상 고르기 (1.15 범위, 문 앞 가산, 바라보는 방향) | interact.js `tdInteractTarget` | 완료 | `world_map.gd find_target` |
 | 횃불 놓기·줍기 (최대 12, 간격·문·광맥 규칙) | player.js `torchAct` | 완료 | T 키·터치 버튼 |
-| 빛: 8분 해질녘 순환, 등불·창·대장간·광맥·횃불·등롱·랜턴 빛 | light.js | 완료 | CanvasModulate + PointLight2D |
+| 빛: 8분 해질녘 순환, 등불·창·대장간·광맥·횃불·일꾼·시설·광장·집·석등 빛, 프레임에 따른 품질 단계 | light.js `tdRenderLighting`, `tdLightList`, `tdQualityFor` | 완료 | `world_light.gd`: 원본처럼 작은 빛 지도(화면의 0.34·0.25·0.2) 한 장에 어둠·빛 구멍·색 빛을 그려 한 번 덮음 · world_objects_test |
 | 구름 그림자·반딧불·풀 흔들림 | light.js `tdCloudShadows`, `tdFireflies`, render.js `tdSway` | **미구현** | 순수 장식 효과. 후속 그래픽 단계 |
 | 미니맵 | render.js `tdRenderMinimap` | 완료 | `world_minimap.gd` |
 | 플레이어 이동 속도 3단위/초 | balance.js `PLAYER_SPEED` | 완료 | 72 → 192 px/s |

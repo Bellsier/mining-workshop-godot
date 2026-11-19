@@ -75,6 +75,24 @@ func _physics_process(_dt: float) -> bool:
 			var objects: Node = current_scene.get_node("World/Objects")
 			var boxes: int = objects.get_node("VillageBodies").get_child_count()
 			_check(boxes == 2 + 2 + 1, "the huts, the two facilities and the house have wall boxes (got %d)" % boxes)
+			# the dusk light is one small light map over the screen (web tdRenderLighting), not one 2D light per lamp
+			var light: Node = objects.get_node("Light")
+			var map: SubViewport = light.get_node("LightMap")
+			var screen: Vector2 = light.get_viewport_rect().size
+			_check(map.size == Vector2i(ceili(screen.x * 0.34), ceili(screen.y * 0.34)), "the light map is 0.34 of the screen (got %s)" % map.size)
+			_check(current_scene.find_children("*", "PointLight2D", true, false).is_empty() and current_scene.find_children("*", "CanvasModulate", true, false).is_empty(),
+				"no per-light 2D lights or canvas tint")
+			var kinds := {}
+			for l: Dictionary in light._lights:
+				kinds[l.kind] = int(kinds.get(l.kind, 0)) + 1
+			var found: int = eco.world.mines.filter(func(m: Dictionary) -> bool: return eco.world.is_discovered(m)).size()
+			_check(kinds.get("lamp") == 1 and kinds.get("window") == 2 and kinds.get("forge") == 2 and kinds.get("vein", 0) == found
+				and kinds.get("lantern") == 1 and kinds.get("aura") == 1 and kinds.get("plaza") == 2 and kinds.get("house") == 1,
+				"the web's lights: the lamp, two windows, a forge per hut, a glow per found vein only, the player's lantern and aura, the plaza lamps, the house (got %s)" % kinds)
+			var LightScript: GDScript = light.get_script()
+			_check(LightScript.quality_for(40.0, 0) == 2 and LightScript.quality_for(30.0, 0) == 1 and LightScript.quality_for(20.0, 1) == 1
+				and LightScript.quality_for(18.0, 2) == 1 and is_equal_approx(LightScript.darkness(0.0), 0.10) and is_equal_approx(LightScript.darkness(4 * 60 * 1000.0), 0.34),
+				"the web's quality steps and dusk cycle")
 			var hut: Dictionary = eco.world.workshops[0]
 			_put(Vector2(hut.x, hut.y + 0.3))
 			_next()

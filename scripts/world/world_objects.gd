@@ -2,8 +2,7 @@ extends Node2D
 ## What stands on the world map besides the ground, the veins and the scenery (web topdown render/sprites/light):
 ## the village ground (plaza, roads, garden lawn), the craft huts, the appraiser and the museum by restoration
 ## stage, the player's house, the garden decorations and the torches, with their wall boxes (they block the
-## player like the web worldObstacles), and the light: a slow dusk cycle with warm lights at the workshop lamp,
-## the huts' forges, the found veins, the torches, the lantern decorations and round the player.
+## player like the web worldObstacles), the hired workers (world_workers.gd) and the dusk light (world_light.gd).
 ## Drawing and collision only; the rules are in scripts/workshop.gd and scripts/village_layout.gd.
 
 const WorldData := preload("res://scripts/world/world_data.gd")
@@ -11,15 +10,6 @@ const Layout := preload("res://scripts/village_layout.gd")
 const FONT := preload("res://fonts/Galmuri9.ttf")
 
 const UNIT := 64.0
-## web TD_LIGHT: one day-to-dusk cycle, the lightest and darkest tint and its colour.
-const CYCLE_MS := 8 * 60 * 1000
-const MIN_DARK := 0.10
-const MAX_DARK := 0.34
-const AMBIENT := Color8(16, 22, 42)
-const VEIN_LIGHT := {
-	"iron": Color("c8b8a8"), "coal": Color("8a8ca0"), "mana": Color("58c9a6"), "crystal": Color("a9dafb"),
-	"rareMetal": Color("edbd64"), "relic": Color("df8b66"), "cosmicShard": Color("c99aee"), "plasma": Color("ea7ec7"),
-}
 
 var economy: Node
 var world: RefCounted
@@ -27,12 +17,7 @@ var player: Node2D
 var _bodies: Node2D
 var _bodies_key := ""
 var _draw_key := ""
-var _modulate: CanvasModulate
-var _lights: Node2D
-var _light_texture: Texture2D
-var _player_lights: Array[PointLight2D] = []
-var _lights_key := ""
-var _flicker: Array = []
+var light: Node2D
 
 
 func setup(game_economy: Node, world_state: RefCounted, walker: Node2D) -> void:
@@ -42,20 +27,14 @@ func setup(game_economy: Node, world_state: RefCounted, walker: Node2D) -> void:
 	_bodies = Node2D.new()
 	_bodies.name = "VillageBodies"
 	add_child(_bodies)
-	_lights = Node2D.new()
-	_lights.name = "Lights"
-	add_child(_lights)
 	var workers := preload("res://scripts/world/world_workers.gd").new()
 	workers.name = "Workers"
 	add_child(workers)
 	workers.setup(economy, world)
-	_modulate = CanvasModulate.new()
-	_modulate.name = "Dusk"
-	get_parent().get_parent().add_child.call_deferred(_modulate)
-	_light_texture = _make_light_texture()
-	for i in 2:
-		var light := _light()
-		_player_lights.append(light)
+	light = preload("res://scripts/world/world_light.gd").new()
+	light.name = "Light"
+	add_child(light)
+	light.setup(economy, world, player, workers)
 	if economy != null:
 		economy.changed.connect(_refresh)
 	_refresh()
@@ -88,12 +67,7 @@ func _refresh() -> void:
 			_add_box(Layout.object_box("workshop", w.x, w.y))
 		for o: Dictionary in Layout.village_boxes(village, int(economy.garden_ui.carry) if economy != null else -1):
 			_add_box(o)
-	var lights_key := JSON.stringify([key, world.torches, world.mines.filter(func(m: Dictionary) -> bool: return world.is_discovered(m)).map(
-		func(m: Dictionary) -> Array: return [m.id, m.developmentState])])
-	if lights_key != _lights_key:
-		_lights_key = lights_key
-		_build_fixed_lights()
-	var draw_key := JSON.stringify([lights_key, world.workshops, village.get("stage"), economy.garden_ui if economy != null else {}])
+	var draw_key := JSON.stringify([key, world.torches, world.workshops, village.get("stage"), economy.garden_ui if economy != null else {}])
 	if draw_key != _draw_key:
 		_draw_key = draw_key
 		queue_redraw()
@@ -108,92 +82,6 @@ func _add_box(o: Dictionary) -> void:
 	body.position = Vector2((o.minX + o.maxX) / 2.0, (o.minY + o.maxY) / 2.0) * UNIT
 	body.add_child(shape)
 	_bodies.add_child(body)
-
-
-# --- light ---------------------------------------------------------------------------------------------------
-
-## web tdAmbientDarkness: a smooth cycle between MIN_DARK and MAX_DARK.
-static func darkness(now_ms: float) -> float:
-	var ph := fposmod(now_ms, CYCLE_MS) / CYCLE_MS
-	var k := 0.5 - 0.5 * cos(ph * TAU)
-	return MIN_DARK + (MAX_DARK - MIN_DARK) * k
-
-
-func _make_light_texture() -> Texture2D:
-	var gradient := Gradient.new()
-	gradient.set_color(0, Color(1, 1, 1, 1))
-	gradient.set_color(1, Color(1, 1, 1, 0))
-	var texture := GradientTexture2D.new()
-	texture.gradient = gradient
-	texture.fill = GradientTexture2D.FILL_RADIAL
-	texture.fill_from = Vector2(0.5, 0.5)
-	texture.fill_to = Vector2(1.0, 0.5)
-	texture.width = 128
-	texture.height = 128
-	return texture
-
-
-func _light() -> PointLight2D:
-	var light := PointLight2D.new()
-	light.texture = _light_texture
-	light.blend_mode = Light2D.BLEND_MODE_ADD
-	_lights.add_child(light)
-	return light
-
-
-## A light of radius `r` world units at (x, y) (web tdLightList entries).
-func _place(light: PointLight2D, x: float, y: float, r: float, color: Color, strength: float) -> void:
-	light.position = to_px(x, y)
-	light.texture_scale = r
-	light.color = color
-	light.energy = strength * 0.55
-
-
-func _build_fixed_lights() -> void:
-	for child in _lights.get_children():
-		if child not in _player_lights:
-			child.queue_free()
-	_flicker.clear()
-	var warm := Color8(255, 210, 130)
-	var b: Vector2i = world.base
-	# [light, x, y, radius, colour, strength, flicker seed, flicker the radius (else the strength)]
-	_flicker.append([_light(), b.x + 0.62, b.y - 0.3, 1.6, warm, 0.9, 1.0, true])
-	_flicker.append([_light(), b.x - 0.24, b.y - 0.3, 0.55, warm, 0.5, 3.0, false])
-	_flicker.append([_light(), b.x + 0.26, b.y - 0.3, 0.55, warm, 0.5, 4.0, false])
-	for i in world.workshops.size():
-		var w: Dictionary = world.workshops[i]
-		_flicker.append([_light(), w.x - 0.17, w.y - 0.2, 0.7, Color8(255, 150, 70), 0.6, 7.0 + i, true])
-	for m: Dictionary in world.mines:
-		if not world.is_discovered(m):
-			continue # a hidden vein never glows: light must not give it away
-		var secured: bool = m.developmentState == "secured"
-		_place(_light(), m.x, m.y - 0.05, 0.8 if secured else 0.55, VEIN_LIGHT.get(m.resource, Color.WHITE), 0.5 if secured else 0.32)
-	for i in world.torches.size():
-		var t: Dictionary = world.torches[i]
-		_flicker.append([_light(), t.x, t.y - 0.25, 1.35, Color8(255, 176, 92), 0.95, 11.0 + i * 2.3, true])
-	var village := _village()
-	var cells := Layout.garden_cells(village)
-	for d: Dictionary in village.get("decor", []):
-		if Layout.decor_def(d.kind).get("light", false) and int(d.cell) < cells.size():
-			_place(_light(), cells[d.cell].x, cells[d.cell].y - 0.2, 0.9, Color8(255, 214, 150), 0.6)
-
-
-func _process(_delta: float) -> void:
-	if world == null:
-		return
-	var now := Time.get_unix_time_from_system() * 1000.0
-	var dark := darkness(now)
-	_modulate.color = Color(1, 1, 1).lerp(AMBIENT, dark)
-	# web tdFlicker: 0.88 + 0.12 sin(t / 140 + seed) sin(t / 53 + 1.7 seed)
-	for f: Array in _flicker:
-		var flick := 0.88 + 0.12 * sin(now / 140.0 + f[6]) * sin(now / 53.0 + f[6] * 1.7)
-		_place(f[0], f[1], f[2], f[3] * (flick if f[7] else 1.0), f[4], f[5] * (1.0 if f[7] else flick))
-	if is_instance_valid(player):
-		var at: Vector2 = player.position / UNIT
-		# web tdLanternLight: next to nothing in full day, a warm pool at the darkest dusk
-		var k := clampf((dark - MIN_DARK - 0.02) / (MAX_DARK - MIN_DARK - 0.02), 0.0, 1.0)
-		_place(_player_lights[0], at.x, at.y - 0.22, 1.1 + 0.5 * k, Color8(255, 214, 150), 0.12 + 0.68 * k)
-		_place(_player_lights[1], at.x, at.y - 0.15, 0.8, Color8(255, 236, 190), 0.6)
 
 
 # --- drawing -------------------------------------------------------------------------------------------------
