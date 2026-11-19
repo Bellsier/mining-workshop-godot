@@ -432,7 +432,13 @@ func _restore(source: Dictionary) -> void:
 	state.merge(source, true)
 	# The original's ticket interval starts again at every page load; it is not carried in the save.
 	state.ticket_elapsed = 0.0
-	var legacy: Dictionary = source.get("legacy_web_save", {})
+	# The imported text is the original; its parsed form is rebuilt from it so saving never drifts it.
+	var legacy_source: Variant = source.get("legacy_web_save_source")
+	if legacy_source is String:
+		var reparsed := Save.legacy_payload(legacy_source)
+		if not reparsed.is_empty():
+			state.legacy_web_save = reparsed
+	var legacy: Dictionary = _dictionary(state.get("legacy_web_save"))
 	var legacy_run := _dictionary(legacy.get("run"))
 	state["village"] = Village.load_progress(source.get("village", legacy_run.get("village")))
 	if not legacy.is_empty() and not source.has("characters"):
@@ -1004,6 +1010,8 @@ func _tick() -> bool:
 	return bool(delivery.get("changed", false)) or mutated
 
 func _valid_save_state(imported: Dictionary) -> bool:
+	if imported.has("legacy_web_save_source") and not imported.legacy_web_save_source is String:
+		return false
 	var legacy: Dictionary = _dictionary(imported.get("legacy_web_save"))
 	var legacy_run: Dictionary = _dictionary(legacy.get("run"))
 	if not imported.has("world") and legacy_run.has("world"):

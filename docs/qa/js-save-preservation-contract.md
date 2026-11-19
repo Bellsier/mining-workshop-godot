@@ -5,9 +5,13 @@ Godot PR #1 `f14d45d` + 1차 수정 브랜치 `claude/feature-parity-p0`.
 
 ## 용어
 
-- **원본 보존**: 가져온 JS 게임 본문(`{saveVersion, savedAt, permanent, run}`)을 `state.legacy_web_save`에 그대로 둔다.
-  Godot는 이 값을 읽기만 하고 고치지 않는다. 가져오기 → 자동 저장 → 다시 불러오기 → 내보내기 → 다시 가져오기를 거쳐도 값이 같다
+- **원본 보존**: 가져온 JSON 텍스트를 `state.legacy_web_save_source`에 **바이트 그대로** 둔다(S2 봉투 포함).
+  게임 본문(`{saveVersion, savedAt, permanent, run}`)은 불러올 때마다 이 텍스트에서 다시 읽어 `state.legacy_web_save`에 둔다.
+  Godot는 둘 다 읽기만 하고 고치지 않는다. 가져오기 → 자동 저장 → 다시 불러오기 → 내보내기 → 다시 가져오기를 거쳐도
+  텍스트는 바이트 단위로, 본문은 값 단위로 같다
   (`tools/parity_fixes_test.gd`의 `_legacy_save_is_kept`, 웹은 `tests/web-save/run.cjs`의 `s2-import`).
+- 텍스트로 두는 이유: Godot 4.4.1의 JSON은 일부 숫자(예: `0.30000000000000004`, `1/3`)를 저장 후 다시 읽으면
+  다른 double이 된다(CI에서 확인). 본문을 딕셔너리로만 저장하면 저장할 때마다 원본 숫자가 1ulp씩 어긋날 수 있다.
 - **활성 복원**: 그 값을 Godot 게임 상태로 옮겨 실제 게임에 반영한다.
 - **미복원**: 원본에는 남아 있지만 Godot 게임에는 반영되지 않는다. 해당 기능을 이식할 때 `legacy_web_save`에서 읽어 복원한다.
 
@@ -46,21 +50,25 @@ JS S2 저장은 게임 본문을 아래 봉투로 감싼다 (`js/save-engine.js`
 - 자동 저장 행: `{id(villageId), revision, snapshot}` · 수동 저장 행: `{slot, revision, snapshot, ...}`
 - 마을 행(`villages`): `{id, name, createdAt, savedAt, revision, epoch, owner, presence, source}` — 가져오기 입력에 포함되지 않음
 
-Godot `Save.import_legacy`는 `{snapshot: ...}` 행과 snapshot 자체를 받아 **`payload`만** `legacy_web_save`에 둔다.
+Godot `Save.import_legacy`는 `{snapshot: ...}` 행과 snapshot 자체를 받는다. 가져온 텍스트 전체가
+`legacy_web_save_source`에 남고, 그 안의 `payload`가 `legacy_web_save`가 된다.
 
 | S2 필드 | 원본 보존 | 활성 복원 | 비고 |
 |---|---|---|---|
 | `snapshot.payload` | 예 | 위 표대로 | 게임 본문 |
-| `snapshot.format` | 아니요 | 검사만 | 1이 아니면 거부 |
-| `snapshot.id` · `villageId` · `name` · `savedAt`, 행 `revision` · `slot` | **아니요** | 아니요 | 가져올 때 버려짐 |
+| `snapshot.format` | 예 (텍스트) | 검사만 | 1이 아니면 거부 |
+| `snapshot.id` · `villageId` · `name` · `savedAt`, 행 `id` · `revision` · `slot` | 예 (텍스트) | **아니요** | Godot에서 쓰는 곳 없음 |
 
-S2 메타데이터는 Godot 쪽에서 쓰는 곳이 없어 이번 범위에서 동작을 바꾸지 않았다. JS 쪽 IndexedDB 원본은 그대로 남는다.
-마을 이름이나 출처(`villageId`)를 Godot에서 보여 주거나 같은 마을을 다시 가져오는지 판별하려면, 다음 단계에서
-`legacy_s2` 같은 별도 키로 메타데이터만(본문 제외) 보존하도록 정해야 한다 — 결정 필요.
+S2 메타데이터는 텍스트로만 남고 Godot 게임에서는 쓰지 않는다. 마을 이름 표시나 같은 마을 재가져오기 판별에
+쓸지는 다음 단계에서 정한다 — 결정 필요. JS 쪽 IndexedDB 원본은 그대로 남는다.
+
+1차 수정 이전(PR #1 `f14d45d`)에 가져온 저장에는 `legacy_web_save_source`가 없다. 그 저장의 `legacy_web_save`는
+그대로 쓰지만, 위 숫자 문제 때문에 원본과 1ulp 단위로 다를 수 있고 S2 메타데이터는 이미 버려진 상태다.
+원본을 바이트 단위로 보존하려면 JS 저장을 한 번 다시 가져와야 한다.
 
 ## 활성 복원 시 지킬 규칙
 
-1. `legacy_web_save`는 읽기 전용이다. 기능을 이식할 때 원본을 고치지 말고 새 Godot 키에 복원 결과를 쓴다.
+1. `legacy_web_save_source`와 `legacy_web_save`는 읽기 전용이다. 기능을 이식할 때 원본을 고치지 말고 새 Godot 키에 복원 결과를 쓴다.
 2. 복원은 한 번만: 새 Godot 키가 이미 있으면 그것이 우선이다 (`characters`가 있으면 legacy 일꾼을 다시 넣지 않는 현재 방식과 같음).
 3. JS sanitize 규칙(`sanitizeWorkshops`, `sanitizeTorches`, `sanitizeTunnelContract`, `sanitizeVillageDecor/District/Site`,
    `sanitizePlayer`)을 그대로 이식하고, 잘못된 항목만 버린다.

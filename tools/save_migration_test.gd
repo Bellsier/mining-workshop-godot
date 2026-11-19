@@ -40,7 +40,11 @@ func _test_legacy_import() -> void:
 	var legacy_run: Dictionary = legacy.get("run", {})
 	_check(legacy_run.has("unmapped_progress"), "unmapped progress is retained")
 	var snapshot := {"format": 1, "payload": payload}
-	_check(Save.import_legacy(JSON.stringify({"snapshot": snapshot})) == state, "S2 row import")
+	var from_row := Save.import_legacy(JSON.stringify({"snapshot": snapshot}))
+	from_row.erase("legacy_web_save_source")
+	var from_payload := state.duplicate()
+	from_payload.erase("legacy_web_save_source")
+	_check(from_row == from_payload, "S2 row import")
 	_check(Save.import_legacy('{"saveVersion": 2, "run": {}}').is_empty(), "future legacy version is rejected")
 	_check(Save.import_legacy('{"saveVersion": "1", "run": {}}').is_empty(), "invalid legacy version is rejected")
 	_check(Save.import_legacy("broken json").is_empty(), "invalid JSON is rejected")

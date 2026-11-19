@@ -70,9 +70,8 @@ static func parse_game(text: String) -> Dictionary:
 	return state if state is Dictionary else {}
 
 
-## Accepts the public web build's v1 payload and an S2 snapshot or snapshot row.
-## Only active economy fields are projected. The original payload remains available for future ports.
-static func import_legacy(text: String) -> Dictionary:
+## The game payload of a web save text (v1 payload, S2 snapshot or snapshot row); {} if it is not one.
+static func legacy_payload(text: String) -> Dictionary:
 	var payload: Variant = _parse_object(text)
 	if payload.has("snapshot") and not payload.has("saveVersion"):
 		payload = payload["snapshot"]
@@ -81,6 +80,17 @@ static func import_legacy(text: String) -> Dictionary:
 			return {}
 		payload = payload["payload"]
 	if not payload is Dictionary or not _is_version(payload.get("saveVersion"), WEB_SAVE_VERSION):
+		return {}
+	return payload
+
+
+## Accepts the public web build's v1 payload and an S2 snapshot or snapshot row.
+## Only active economy fields are projected. The original payload remains available for future ports:
+## legacy_web_save_source keeps the imported text exactly (S2 envelope included), because Godot's JSON
+## does not read every number back as the same double; legacy_web_save is parsed from it on every load.
+static func import_legacy(text: String) -> Dictionary:
+	var payload := legacy_payload(text)
+	if payload.is_empty():
 		return {}
 	var run: Variant = payload.get("run")
 	if not run is Dictionary:
@@ -103,6 +113,7 @@ static func import_legacy(text: String) -> Dictionary:
 		"inventory": inventory,
 		"completed_research": completed_research,
 		"legacy_web_save": payload,
+		"legacy_web_save_source": text,
 	}
 
 

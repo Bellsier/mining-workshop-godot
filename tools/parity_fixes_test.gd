@@ -298,6 +298,7 @@ func _legacy_save_is_kept() -> void:
 	var game := _game(true)
 	_check(game.import_save(text), "the JS save imports")
 	_kept(game.state.legacy_web_save, original, "legacy_web_save equals the JS save after import")
+	_check(game.state.get("legacy_web_save_source") == text, "the imported JS text is kept byte for byte")
 	_kept(Save.load_game().get("legacy_web_save"), original, "legacy_web_save equals the JS save in the written file")
 	# Play, autosave, and play again: the original payload is data, never rewritten by the game.
 	game.mine("iron")
@@ -319,6 +320,7 @@ func _legacy_save_is_kept() -> void:
 	reloaded.queue_free()
 	var again := _game(true)
 	_kept(again.state.legacy_web_save, original, "legacy_web_save is unchanged after a second reload")
+	_check(again.state.get("legacy_web_save_source") == text, "the JS text is byte for byte the same after saves and reloads")
 	again.queue_free()
 	# An S2 auto-save row around the same JSON text (the payload is not re-serialized by Godot here).
 	var row := '{"id":"11111111-2222-4333-8444-555555555555","revision":3,"snapshot":{"format":1,' \
@@ -327,8 +329,12 @@ func _legacy_save_is_kept() -> void:
 	var s2 := _game()
 	_check(s2.import_save(row), "an S2 row imports")
 	_kept(s2.state.legacy_web_save, original, "an S2 row keeps the game payload")
+	_check(s2.state.get("legacy_web_save_source") == row, "an S2 row keeps its envelope (villageId, snapshot id, name, revision) as text")
 	s2.queue_free()
-	# Number round trip used by every Godot save: the stored text must read back as the same double.
+	# Godot 4.4.1's JSON does not read every number back as the same double. That is why the original
+	# is kept as text. Recorded here so a later engine change shows up in the log.
 	for number: float in [1.0 / 10.0 + 2.0 / 10.0, 142875.0 / 1000.0, 1792000000000.0, 115.0 / 100.0, 1.0 / 3.0]:
-		var back: Variant = JSON.parse_string(JSON.stringify([number], "", true, true))[0]
-		_check(float(back) == number, "JSON number round trip %s → %s" % [var_to_str(number), var_to_str(back)])
+		var stored := JSON.stringify([number], "", true, true)
+		var back: float = float(JSON.parse_string(stored)[0])
+		if back != number:
+			print("NOTE engine JSON number round trip is lossy: %s read back %s off by %s" % [stored, var_to_str(back), var_to_str(back - number)])

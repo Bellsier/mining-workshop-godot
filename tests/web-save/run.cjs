@@ -462,6 +462,7 @@ async function s2Import({ page, baseline, note, shot }) {
   assert.equal((await pos(page)).x, 128);
   // The JS original stays as imported after autosave and reload.
   assert.deepEqual((await store.read(page)).state.legacy_web_save, legacy);
+  assert.equal((await store.read(page)).state.legacy_web_save_source, json, 'the imported text is kept exactly');
   note({ failedImportPreserved: true, s2ImportedAfterCommit: true, replacedSaveBackedUp: true });
 }
 

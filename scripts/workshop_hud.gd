@@ -399,13 +399,24 @@ func _render_inventory(inventory: Dictionary) -> void:
 
 ## The original's fmt(): "0" for nothing, one decimal below 10 when fractional, else whole units with
 ## thousands separators. A 0.5 iron stays visible as "0.5" instead of rounding down to nothing.
+@warning_ignore("integer_division")
 static func format_quantity(value: float) -> String:
 	if not is_finite(value) or value <= 0.0:
 		return "0"
 	if value < 10.0 and value != floorf(value):
-		# toFixed(1): round half up on the stored value (0.25 → "0.3", 9.96 → "10.0").
-		var tenths := int(floorf(value * 10.0 + 0.5))
-		return "%.1f" % (tenths / 10.0)
+		# toFixed(1) on the exact stored value, ties up (0.25 → "0.3", 9.96 → "10.0", 1.15 → "1.1").
+		# value × 10 in floating point can round across the .x5 boundary, so this works in integers:
+		# value = mantissa / 2^shift exactly, and tenths = floor((10·mantissa + 2^(shift-1)) / 2^shift).
+		if value < 0.04:
+			return "0.0"
+		var mantissa := value
+		var shift := 0
+		while mantissa != floorf(mantissa):
+			mantissa *= 2.0
+			shift += 1
+		var scale := 1 << shift
+		var tenths := (int(mantissa) * 10 + scale / 2) / scale
+		return "%d.%d" % [tenths / 10, tenths % 10]
 	var digits := str(int(floorf(value)))
 	var grouped := ""
 	while digits.length() > 3:
