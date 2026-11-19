@@ -17,6 +17,7 @@ const EMPTY_SHA256 := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7
 static var _save_lock := Mutex.new()
 static var _original_key := ""
 static var _original_result := {}
+static var _base64: RegEx
 
 
 static func has_file() -> bool:
@@ -112,8 +113,12 @@ static func legacy_original(state: Dictionary) -> Dictionary:
 	if key == _original_key:
 		return _original_result
 	var result := {"status": "corrupt", "bytes": PackedByteArray(), "payload": {}, "origin": str(state.get(LEGACY_ORIGIN, "")), "reason": ""}
-	var bytes := Marshalls.base64_to_raw(encoded) if not encoded.is_empty() else PackedByteArray()
-	if Marshalls.raw_to_base64(bytes) != encoded:
+	if _base64 == null:
+		_base64 = RegEx.create_from_string("^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$")
+	# Checked first: Godot prints engine errors for text that is not base64.
+	var well_formed := not encoded.is_empty() and _base64.search(encoded) != null
+	var bytes := Marshalls.base64_to_raw(encoded) if well_formed else PackedByteArray()
+	if not well_formed or Marshalls.raw_to_base64(bytes) != encoded:
 		result.reason = "base64"
 	elif state.get(LEGACY_SHA256) != sha256_hex(bytes):
 		result.reason = "sha256"

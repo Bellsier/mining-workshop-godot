@@ -70,7 +70,9 @@ static func number_text(x: float) -> String:
 ## [digits, exponent] with value = digits × 10^exponent: the fewest digits that read back as x (x > 0).
 static func shortest_digits(x: float) -> Array:
 	var exact := _exact_decimal(x)
-	for precision in [15, 16, 17]:
+	# Below the smallest normal double precision is lower, so fewer than 15 digits can be the shortest.
+	var precisions := range(1, 18) if x < _from_bits(0x0010000000000000) else [15, 16, 17]
+	for precision: int in precisions:
 		var rounded := _round_digits(exact[0], precision)
 		var digits: String = rounded[0]
 		var exponent: int = exact[1] + rounded[1]
@@ -103,10 +105,29 @@ static func decimal_to_double(digits: String, exponent: int) -> float:
 		# Both operands are exact doubles, so one IEEE operation rounds correctly (Clinger's fast path).
 		var whole := float(digits.to_int())
 		return whole * _power_of_ten(exponent) if exponent >= 0 else whole / _power_of_ten(-exponent)
-	var guess := ("%se%d" % [digits, exponent]).to_float()
-	if not is_finite(guess) or guess <= 0.0:
-		guess = 1.7976931348623157e308 if count + exponent > 0 else _from_bits(1)
+	var guess := _guess(digits, exponent)
+	if not is_finite(guess):
+		guess = _from_bits(0x7FEFFFFFFFFFFFFF)
+	elif guess <= 0.0:
+		guess = _from_bits(1)
 	return _correct(guess, _big_from_digits(digits), exponent)
+
+
+## Within a few units in the last place of digits × 10^exponent (each step rounds once). Godot's own
+## String.to_float is not used: it gives up on exponents near the ends of the double range.
+static func _guess(digits: String, exponent: int) -> float:
+	var head := digits.substr(0, 17)
+	var scale := exponent + digits.length() - head.length()
+	var x := float(head.to_int())
+	while scale > 0:
+		var step := mini(scale, 22)
+		x *= _power_of_ten(step)
+		scale -= step
+	while scale < 0:
+		var step := mini(-scale, 22)
+		x /= _power_of_ten(step)
+		scale += step
+	return x
 
 
 # --- reading ------------------------------------------------------------------------------------------
