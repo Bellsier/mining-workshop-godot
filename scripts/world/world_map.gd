@@ -191,7 +191,7 @@ func _physics_process(delta: float) -> void:
 	var text: String = place.label
 	text += "  ·  광맥 %d/%d" % [state.discovered_count(), state.mines.size()]
 	if not _near_vein.is_empty():
-		text += "\nE  ·  %s 채굴" % WorldData.resource_name(_near_vein.resource)
+		text += "\nE  ·  " + action_label(str(_near_vein.id))
 	if text != _place:
 		_place = text
 		_region_label.text = text
@@ -200,20 +200,28 @@ func _physics_process(delta: float) -> void:
 		if _toast_left <= 0.0:
 			_toast.text = ""
 
-## Mines the vein the player stands at through the workshop economy, when the game has one
-## (Game.workshop.mine(resource)). Returns true when something was mined.
+## E at the vein the player stands at (web interact.js): secures a found vein whose area is open, mines a
+## secured one, or says which area must open first. Goes through the workshop economy.
 func mine_near_vein() -> bool:
 	if _near_vein.is_empty() or get_node("/root/Game").world_input_blocked():
 		return false
 	var game := get_node_or_null("/root/Game")
 	var economy: Variant = game.get("workshop") if game != null else null
-	var res_name := WorldData.resource_name(_near_vein.resource)
-	if economy == null or not (economy as Object).has_method("mine"):
-		show_toast("%s 광맥 · 채굴은 공방 연결 후" % res_name)
+	if economy == null or not (economy as Object).has_method("mine_vein"):
 		return false
-	var ok: bool = economy.mine_vein(str(_near_vein.id))
-	show_toast(("%s +1" if ok else "%s 광맥 · 아직 잠겨 있어요") % res_name)
-	return ok
+	var id := str(_near_vein.id)
+	match str(economy.vein_action(id)):
+		"secure":
+			if economy.secure_vein(id):
+				show_toast("확보!")
+				queue_redraw()
+				return true
+			return false
+		"mine":
+			return economy.mine_vein(id)
+		"locked":
+			show_toast(action_label(id))
+	return false
 
 func show_toast(text: String) -> void:
 	_toast.text = text
@@ -323,9 +331,27 @@ func context_at(point: Vector2) -> String:
 
 func action_label(id: String) -> String:
 	if id == "workshop":
-		return "공방 열기"
+		return "공방 들어가기"
 	var vein: Dictionary = state.mine_by_id(id)
-	return WorldData.resource_name(vein.resource) + " 채굴" if not vein.is_empty() else ""
+	if vein.is_empty():
+		return ""
+	var game := get_node_or_null("/root/Game")
+	var economy: Variant = game.get("workshop") if game != null else null
+	var name := WorldData.resource_name(vein.resource)
+	if economy == null or not (economy as Object).has_method("vein_action"):
+		return name + " 채굴"
+	match str(economy.vein_action(id)):
+		"secure":
+			return name + " 광맥 확보"
+		"mine":
+			return "%s 캐기 +%s" % [name, economy.Hud.format_quantity(float(vein.miningPower) * economy._multiplier())]
+		"locked":
+			var site := ""
+			for row: Dictionary in WorldData.sites():
+				if row.key == WorldData.resource(vein.resource).get("site", ""):
+					site = row.name
+			return (site if not site.is_empty() else "지역") + " 해금 필요"
+	return ""
 
 func _on_tunnel_opened(_added: Array) -> void:
 	_refresh_terrain.call_deferred()

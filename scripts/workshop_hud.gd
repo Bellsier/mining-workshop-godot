@@ -1,10 +1,10 @@
 extends CanvasLayer
 ## Inventory is available anywhere. The world controller opens the full menu at the workshop.
 
-enum { TAB_INVENTORY, TAB_CRAFT, TAB_SELL, TAB_WORKERS, TAB_RESEARCH, TAB_DELIVERY, TAB_VILLAGE, TAB_SAVE }
+enum { TAB_INVENTORY, TAB_MINING, TAB_CRAFT, TAB_SELL, TAB_WORKERS, TAB_RESEARCH, TAB_DELIVERY, TAB_VILLAGE, TAB_SAVE }
 
 const ExactJson := preload("res://scripts/exact_json.gd")
-const TABS := ["가방", "제작", "판매", "인부", "연구", "납품", "마을", "저장"]
+const TABS := ["가방", "채굴", "제작", "판매", "인부", "연구", "납품", "마을", "저장"]
 const PAPER := Color("f5e5ce")
 const MUTED := Color("d3bda0")
 
@@ -345,17 +345,18 @@ func _refresh(force := false) -> void:
 			_names[output] = _names[id]
 	match _active_tab:
 		TAB_INVENTORY: _render_inventory(inventory)
+		TAB_MINING: _render_mining(state.get("mining", {}), str(state.get("hint", "")), inventory, gold)
 		TAB_CRAFT:
 			var auto_unlocked := bool(state.get("completed_research", {}).get("autoCraftDevice", false))
 			_render_huts(state.get("huts", {}), recipes, inventory, gold, auto_unlocked)
+			_render_upgrades(state.get("upgrades", []).filter(func(u: Dictionary) -> bool: return u.id in ["hq_level", "craft_facility"]), inventory, gold)
 			_render_recipes(recipes, inventory, automation, auto_unlocked)
 		TAB_SELL: _render_sales(resources, products, recipes, inventory, automation, gold)
-		TAB_WORKERS: _render_workers(state.get("workers", []), state.get("worker_details", []), resources, gold)
+		TAB_WORKERS:
+			_render_workers(state.get("workers", []), state.get("worker_details", []), resources, gold, int(state.get("worker_cap", 0)), str(state.get("last_pull", "")))
 		TAB_RESEARCH:
 			_render_tunnel(state.get("tunnel", {}), state.get("completed_research", {}), inventory, gold)
 			_render_research(state.get("research", []), state.get("completed_research", {}), inventory, gold)
-			_render_sites(state.get("sites", []), inventory, gold)
-			_render_upgrades(state.get("upgrades", []), inventory, gold)
 		TAB_DELIVERY: _render_deliveries(state.get("deliveries", state.get("delivery_offers", [])), int(state.get("reputation", 0)))
 		TAB_VILLAGE: _render_village(state.get("village", {}), inventory, gold)
 		TAB_SAVE: _render_save()
@@ -368,7 +369,7 @@ func _refresh(force := false) -> void:
 
 func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: float) -> String:
 	if _active_tab == TAB_WORKERS:
-		return JSON.stringify([gold, state.get("workers", []), state.get("worker_details", []), state.get("resources", [])])
+		return JSON.stringify([floorf(gold), state.get("workers", []), state.get("worker_details", []), state.get("resources", []), state.get("last_pull", ""), state.get("worker_cap", 0)])
 	if _active_tab == TAB_DELIVERY:
 		return JSON.stringify([state.get("reputation", 0), state.get("deliveries", state.get("delivery_offers", []))])
 	var visible_quantities := {}
@@ -385,6 +386,7 @@ func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: 
 	var completed: Dictionary = state.get("completed_research", {})
 	match _active_tab:
 		TAB_INVENTORY: return JSON.stringify(shown_quantities)
+		TAB_MINING: return JSON.stringify([state.get("mining", {}), state.get("hint", ""), floorf(gold)])
 		TAB_CRAFT:
 			var remaining := []
 			for recipe in recipes:
@@ -394,9 +396,9 @@ func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: 
 				# Seconds left in tenths, like the web hut card; the rest only when it changes.
 				var upgrade_gold := float(hut.get("upgrade", {}).get("gold", INF))
 				huts.append([hut.id, hut.level, hut.recipe, hut.auto, hut.status, ceili(float(hut.progress) * 10.0), gold >= upgrade_gold])
-			return JSON.stringify([visible_quantities, automation, completed, remaining, huts, state.get("huts", {}).get("block", "")])
+			return JSON.stringify([visible_quantities, automation, completed, remaining, huts, state.get("huts", {}).get("block", ""), state.get("upgrades", []), floorf(gold)])
 		TAB_SELL: return JSON.stringify([shown_quantities, automation, gold])
-		TAB_RESEARCH: return JSON.stringify([state.get("tunnel", {}), visible_quantities, completed, state.get("sites", []), state.get("upgrades", []), gold])
+		TAB_RESEARCH: return JSON.stringify([state.get("tunnel", {}), visible_quantities, completed, floorf(gold)])
 		TAB_VILLAGE: return JSON.stringify([visible_quantities, state.get("village", {}), gold])
 	return str(_active_tab)
 
@@ -565,8 +567,10 @@ func _render_sales(resources: Array, products: Array, recipes: Array, inventory:
 				buy.disabled = gold < cost
 				actions.add_child(buy)
 
-func _render_workers(workers: Array, assigned: Array, resources: Array, gold: float) -> void:
-	_rows.add_child(_label("고용 인부 %d명" % assigned.size(), 11))
+func _render_workers(workers: Array, assigned: Array, resources: Array, gold: float, cap := 0, last_pull := "") -> void:
+	_rows.add_child(_label("고용 인부 %d / %d명" % [assigned.size(), cap] if cap > 0 else "고용 인부 %d명" % assigned.size(), 11))
+	if not last_pull.is_empty():
+		_rows.add_child(_label(last_pull, 10))
 	for worker in workers:
 		var id := _item_id(worker)
 		var cost := int(worker.get("cost", 0))
@@ -581,7 +585,19 @@ func _render_workers(workers: Array, assigned: Array, resources: Array, gold: fl
 	for worker in assigned:
 		var id := _item_id(worker)
 		var assigned_to := str(worker.get("resource", ""))
-		var actions := _add_row(str(worker.get("rating", "")) + " 인부", "배치 · " + _name_for(assigned_to))
+		var number := assigned.find(worker) + 1
+		var details := "배치 · " + _name_for(assigned_to)
+		var stats: Dictionary = worker.get("stats", {})
+		if not stats.is_empty():
+			details += " · 종합 +%.2f/초" % float(worker.get("effective", 0))
+		var actions := _add_row("%s #%d" % [str(worker.get("rating", "")), number], details)
+		for stat: String in stats:
+			var st: Dictionary = stats[stat]
+			var at_max := int(st.level) >= int(st.max)
+			var caption := "%s %.1f · %s" % [st.label, float(st.value), "최대" if at_max else "강화 %d G" % int(st.cost)]
+			var button := _button(caption, _perform2.bind("upgrade_worker", id, stat))
+			button.disabled = at_max or gold < float(st.cost)
+			actions.add_child(button)
 		var picker := OptionButton.new()
 		picker.custom_minimum_size = Vector2(84, 26)
 		var available_resources := PackedStringArray()
@@ -625,25 +641,6 @@ func _render_research(research: Array, completed: Dictionary, inventory: Diction
 				ready = false
 				break
 		_add_row(title, details, "연구", "unlock", id, ready)
-
-func _render_sites(sites: Array, inventory: Dictionary, gold: float) -> void:
-	if sites.is_empty() or not _workshop.has_method("open_site"):
-		return
-	_rows.add_child(_label("채굴 지역", 12))
-	for site in sites:
-		var id := _item_id(site)
-		var title := str(site.get("name", id))
-		if bool(site.get("unlocked", false)):
-			_add_row(title, "열림")
-			continue
-		var cost: Variant = site.get("cost", 0)
-		var money := int(cost.get("gold", 0)) if cost is Dictionary else int(cost)
-		var needs: Dictionary = cost.get("products", {}) if cost is Dictionary else {}
-		var details := "%d G" % money
-		if not needs.is_empty():
-			details += " · " + _describe_items(needs)
-		var ready := gold >= money and _has_items(inventory, needs) and bool(site.get("available", true))
-		_add_row(title, details, "열기", "open_site", id, ready)
 
 func _render_deliveries(deliveries: Array, reputation: int) -> void:
 	_rows.add_child(_label("납품 평판 %d" % reputation, 11))
@@ -925,6 +922,78 @@ func _add_row(title: String, details: String, action := "", method := "", id := 
 
 func _perform(method: String, id: String) -> void:
 	_workshop.call(method, id)
+
+func _perform2(method: String, id: String, value: String) -> void:
+	_workshop.call(method, id, value)
+
+## The 채굴 tab (web 채굴 panel): the next step, the base, the found veins and the mining lines.
+func _render_mining(mining: Dictionary, hint: String, inventory: Dictionary, gold: float) -> void:
+	if mining.is_empty():
+		return
+	if not hint.is_empty():
+		var tip := _label(hint, 10)
+		tip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		tip.add_theme_color_override("font_color", Color("f1c577"))
+		_rows.add_child(tip)
+	var base: Dictionary = mining.base
+	var next: Dictionary = base.get("next", {})
+	var where := "위치 (%d, %d) · 인부 정원 %d명" % [int(base.x), int(base.y), int(base.worker_cap)]
+	if next.is_empty():
+		_add_row("거점 Lv.%d" % int(base.level), where + " · 모든 지역을 개척했어요.")
+	else:
+		var cost: Dictionary = next.cost
+		_add_row("거점 Lv.%d" % int(base.level), where + " · 다음 지역 확장: %s (%s)" % [next.name, _cost_text(cost)],
+			"확장", "expand_base", "expand_base", gold >= float(cost.gold) and _has_items(inventory, cost.products))
+	_rows.add_child(_label("월드 광맥", 12))
+	var veins: Array = mining.get("veins", [])
+	if veins.is_empty() and int(mining.get("hidden", 0)) == 0:
+		_rows.add_child(_label("아직 발견된 광맥이 없어요.", 10))
+	for vein: Dictionary in veins:
+		var secured := str(vein.action) == "mine"
+		var details := "위치 (%d, %d) · 등급 %d · 채굴력 %d · %s초당 +%s" % [int(vein.x), int(vein.y), int(vein.grade), int(vein.power),
+			"확보 완료 · " if secured else "미확보 · 확보하면 ", format_quantity(float(vein.rate))]
+		var caption := "확보됨" if secured else ("잠김 · %s 해금 필요" % vein.site_name if vein.action == "locked" else "광맥 확보")
+		var actions := _add_row(str(vein.name), details, caption, "secure_vein", str(vein.id), str(vein.action) == "secure")
+		var mine_button := _button("채굴하기 (+%s)" % format_quantity(float(vein.haul)), _perform.bind("mine_vein", str(vein.id)))
+		mine_button.disabled = not secured
+		actions.add_child(mine_button)
+	if int(mining.get("hidden", 0)) > 0:
+		var note := _label("미발견 광맥 %d개 — 걸어 다니며 가까이 가면 발견돼요." % int(mining.hidden), 10)
+		note.add_theme_color_override("font_color", MUTED)
+		_rows.add_child(note)
+	_rows.add_child(_label("채굴장", 12))
+	for group: Dictionary in mining.get("lines", []):
+		if not group.unlocked:
+			var names := PackedStringArray()
+			for row: Dictionary in group.resources:
+				names.append(str(row.name))
+			var text := "아직 탐사하지 않은 채굴장이에요. 고유 광물: %s" % ", ".join(names)
+			if not group.recipes.is_empty():
+				text += " · 관련 제작품: " + ", ".join(PackedStringArray(group.recipes))
+			var cost: Dictionary = group.cost
+			_add_row("잠김 · " + str(group.name), text, "탐사 (%s)" % _cost_text(cost), "open_site", str(group.id),
+				gold >= float(cost.gold) and _has_items(inventory, cost.products))
+			continue
+		for row: Dictionary in group.resources:
+			var auto := float(row.auto)
+			var rate := "자동 +%.1f/초" % auto if auto > 0.0 else "수동 채굴만 가능"
+			var actions := _add_row("%s · %s" % [group.name, row.name], "보유 %s · %s" % [format_quantity(float(row.amount)), rate],
+				"채굴 +%.1f" % float(row.manual), "mine", str(row.id), true)
+			for kind: String in ["facility", "workforce"]:
+				var lever: Dictionary = row[kind]
+				var at_max := int(lever.level) >= int(lever.max)
+				var label := "채굴 도구" if kind == "facility" else "인력"
+				var button := _button("%s Lv.%d · %s" % [label, int(lever.level), "최대" if at_max else "%s %d개" % [row.name, int(lever.cost)]],
+					_perform.bind("upgrade", "%s:%s" % [kind, row.id]))
+				button.disabled = at_max or float(row.amount) < float(lever.cost)
+				actions.add_child(button)
+
+func _cost_text(cost: Dictionary) -> String:
+	var text := "%s G" % format_quantity(float(cost.get("gold", 0)))
+	var parts: Dictionary = cost.get("products", {})
+	if not parts.is_empty():
+		text += " + " + _describe_items(parts)
+	return text
 
 func _show_save_status(status: String) -> void:
 	if not is_instance_valid(_save_indicator):

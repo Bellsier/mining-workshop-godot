@@ -9,8 +9,9 @@ static func reputation_multiplier(data: Dictionary, state: Dictionary) -> float:
 	var rules := _rules(data, "reputation")
 	var points := mini(reputation(data, state), int(rules.get("MAX", 36)))
 	var soft_cap := int(rules.get("MULT_SOFT_AT", 18))
-	return 1.0 + mini(points, soft_cap) * float(rules.get("MULT_PER_POINT", 0.12)) \
-		+ maxi(0, points - soft_cap) * float(rules.get("MULT_PER_POINT_SOFT", 0.045))
+	# web mult(): 1 + reputationMultiplierBonus(), the bonus summed first (floating-point addition is not associative).
+	return 1.0 + (mini(points, soft_cap) * float(rules.get("MULT_PER_POINT", 0.12)) \
+		+ maxi(0, points - soft_cap) * float(rules.get("MULT_PER_POINT_SOFT", 0.045)))
 
 
 static func reputation_effect(data: Dictionary, state: Dictionary, id: String) -> float:

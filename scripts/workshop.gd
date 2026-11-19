@@ -10,8 +10,12 @@ const Save = preload("res://scripts/workshop_save.gd")
 const Delivery = preload("res://scripts/workshop_delivery.gd")
 const Village = preload("res://scripts/workshop_village.gd")
 const CraftHuts = preload("res://scripts/craft_huts.gd")
+const Hud = preload("res://scripts/workshop_hud.gd")
+const WorldTerrainScript = preload("res://scripts/world/world_terrain.gd")
 const CATALOG := "res://data/web_catalog.json"
 const TICK := 0.1
+## web TICKS_PER_SECOND (1000 / TICK_MS): per-tick amounts are rate / this, bit for bit like the original.
+const TICKS_PER_SECOND := 10.0
 ## Ten 0.1 s ticks sum to slightly less than 1 s in floating point; the boundary must not slip a tick.
 const TICKET_EPSILON := 0.000001
 const WEB_SAVE_SCRIPT := "res://scripts/workshop_web_save.js"
@@ -441,7 +445,7 @@ func _restore(source: Dictionary) -> void:
 		"characters": [], "automation": {"craft": {}, "sell_owned": {}, "sell": {}, "target": {}},
 		"queue": {}, "tickets": 0, "ticket_elapsed": 0.0, "first_ticket": false,
 		"hq_level": 0, "craft_facility": 1, "facility": {}, "workforce": {}, "stats": {},
-		"position": {}, "tunnel_open": false, "tunnel_remaining": 0.0,
+		"position": {}, "tunnel_open": false, "tunnel_remaining": 0.0, "last_pull": {}, "auto_line_logged": false,
 	}
 	state.merge(source, true)
 	# The original's ticket interval starts again at every page load; it is not carried in the save.
@@ -478,6 +482,8 @@ func _restore(source: Dictionary) -> void:
 		state.facility = _dictionary(run.get("facility"))
 		state.workforce = _dictionary(run.get("workforce"))
 		state.tunnel_open = bool(_dictionary(run.get("world")).get("tunnelUnlocked", false))
+		state.last_pull = _dictionary(run.get("lastPull")) if _valid_worker(run.get("lastPull")) else {}
+		state.auto_line_logged = run.get("autoLineLogged") == true
 
 	var legacy_world := _dictionary(legacy_run.get("world"))
 	var world_data: Dictionary = source.get("world", legacy_world)
@@ -516,11 +522,61 @@ func _record_world(background := false) -> void:
 		_mark_dirty(false, background)
 	state.tunnel_open = world.tunnel_unlocked
 
-func mine_vein(id: String) -> bool:
+# --- world veins (web factory.js secureMine / mineMine, interact.js) --------------------------------------
+
+## What pressing E at a vein does: "secure" (unsecured, its area open), "mine" (secured), "locked" (its area
+## is still closed) or "" (unknown or still hidden).
+func vein_action(id: String) -> String:
 	var vein: Dictionary = world.mine_by_id(id)
 	if vein.is_empty() or not world.is_discovered(vein):
+		return ""
+	if vein.get("developmentState") == "secured":
+		return "mine"
+	return "secure" if is_resource_open(str(vein.resource)) else "locked"
+
+## Secures a found vein whose area is open: from then on it yields miningPower * grade * MINE_RATE_PER_GRADE
+## per second (times the multiplier) and can be mined by hand.
+func secure_vein(id: String) -> bool:
+	var vein: Dictionary = world.mine_by_id(id)
+	if vein.is_empty() or vein.get("developmentState") != "unsecured" or not world.is_discovered(vein):
 		return false
-	return mine(str(vein.resource))
+	if not is_resource_open(str(vein.resource)):
+		var site: Dictionary = _tables.sites.get(_tables.resources.get(vein.resource, {}).get("site", ""), {})
+		return _reject("%s 해금이 필요해요." % site.get("name", "지역"))
+	world.secure(id)
+	_record_world()
+	return _updated("광맥 확보 · %s (%d, %d)" % [_label(vein.resource), int(vein.x), int(vein.y)])
+
+## Mines a secured vein by hand: miningPower times the multiplier. Now and then an unidentified relic turns up
+## (more often in a relic vein and beyond the mountains).
+func mine_vein(id: String) -> bool:
+	var vein: Dictionary = world.mine_by_id(id)
+	if vein.is_empty() or not world.is_discovered(vein) or vein.get("developmentState") != "secured":
+		return false
+	if not _tables.resources.has(vein.resource) or not (float(vein.get("miningPower", 0)) > 0.0):
+		return false
+	var amount := float(vein.miningPower) * _multiplier()
+	_add(vein.resource, amount)
+	var beyond := WorldTerrainScript.region_at(float(vein.x), float(vein.y)) == "beyond"
+	var relic_found := Village.mine(data, state.village, str(vein.resource), beyond)
+	return _updated("%s +%s%s" % [_label(vein.resource), Hud.format_quantity(amount), " · 미감정 유물!" if relic_found else ""])
+
+## Passive yield of one secured vein per second, before the multiplier (web mineBaseRate).
+func vein_rate(vein: Dictionary) -> float:
+	return float(vein.miningPower) * float(vein.grade) * float(data.balance.mining.MINE_RATE_PER_GRADE)
+
+## Automatic income of a resource per second (web autoRate): workers, workforce and secured veins.
+func auto_rate(id: String) -> float:
+	var workers := 0.0
+	for c: Dictionary in state.characters:
+		if c.get("resource") == id:
+			workers += float(c.mining) * float(c.carry) * float(c.move) / float(data.balance.worker.EFFECTIVE_DIVISOR)
+	var workforce := float(state.workforce.get(id, 0)) * float(data.balance.mining.WORKFORCE_BONUS_MULTIPLIER)
+	var veins := 0.0
+	for m: Dictionary in world.mines:
+		if m.get("resource") == id and m.get("developmentState") == "secured":
+			veins += vein_rate(m)
+	return (workers + workforce + veins) * _multiplier()
 
 func order_tunnel(_id := "") -> bool:
 	if world.tunnel_unlocked or state.tunnel_remaining > 0.0 or not state.completed_research.get("tunnelWork", false):
@@ -693,8 +749,14 @@ func snapshot() -> Dictionary:
 	for record: Dictionary in state.characters:
 		var resource_id := str(record.get("resource", ""))
 		assigned[resource_id] = int(assigned.get(resource_id, 0)) + 1
+		var stats := {}
+		for stat in ["mining", "carry", "move"]:
+			stats[stat] = {"value": float(record.get(stat, 0)), "level": int(record.get(stat + "Lvl", 0)),
+				"max": int(data.balance.worker.STAT_MAX_LEVEL), "cost": worker_upgrade_cost(record, stat),
+				"label": str(data.stat_label.get(stat, stat))}
 		workers.append({"id": record.id, "resource": resource_id, "rarity": record.rarity,
-			"name": _label(resource_id), "rating": _tables.rarity.get(record.rarity, {}).get("label", record.rarity)})
+			"name": _label(resource_id), "rating": _tables.rarity.get(record.rarity, {}).get("label", record.rarity),
+			"stats": stats, "effective": _worker_effective(record)})
 	for row: Dictionary in data.resources:
 		resources.append({"id": row.key, "name": row.name, "unlocked": is_resource_open(row.key)})
 	for row: Dictionary in data.recipes:
@@ -713,8 +775,125 @@ func snapshot() -> Dictionary:
 		"owned_workers": assigned, "worker_details": workers, "tickets": state.tickets, "research": research,
 		"completed_research": state.completed_research, "stats": state.stats, "automation": state.automation,
 		"tunnel": {"open": world.tunnel_unlocked, "remaining": ceili(state.tunnel_remaining), "cost": data.balance.tunnel},
-		"sites": sites, "upgrades": _upgrade_options(), "huts": _huts_snapshot(), "deliveries": Delivery.offers(data, state),
+		"sites": sites, "upgrades": _upgrade_options(), "huts": _huts_snapshot(), "mining": _mining_snapshot(),
+		"hint": next_hint(), "worker_cap": worker_cap(), "last_pull": _last_pull_text(), "deliveries": Delivery.offers(data, state),
 		"reputation": Delivery.reputation(data, state), "village": Village.snapshot(data, state.village), "save_error": _save_error}
+
+func _worker_effective(worker: Dictionary) -> float:
+	return float(worker.get("mining", 0)) * float(worker.get("carry", 0)) * float(worker.get("move", 0)) \
+		/ float(data.balance.worker.EFFECTIVE_DIVISOR)
+
+func _last_pull_text() -> String:
+	var c: Dictionary = state.get("last_pull", {})
+	if c.is_empty() or not _tables.rarity.has(c.get("rarity")):
+		return ""
+	return "방금 뽑음: [%s] %s 담당 (종합 +%.2f/초)" % [_tables.rarity[c.rarity].label, _label(str(c.resource)), _worker_effective(c)]
+
+## The 채굴 tab (web renderBaseInfo, buildMines, buildLines): the base, the found veins and the mining lines.
+func _mining_snapshot() -> Dictionary:
+	var next := next_expansion_site()
+	var base := {"level": world.base_level, "x": world.base.x, "y": world.base.y, "worker_cap": worker_cap(),
+		"next": {} if next.is_empty() else {"id": next.key, "name": next.name, "cost": {"gold": next.unlockCost, "products": next.unlockProducts}}}
+	var veins: Array = []
+	var hidden := 0
+	for m: Dictionary in world.mines:
+		if not world.is_discovered(m):
+			hidden += 1
+			continue
+		var site: Dictionary = _tables.sites.get(_tables.resources.get(m.resource, {}).get("site", ""), {})
+		veins.append({"id": m.id, "resource": m.resource, "name": _label(m.resource), "x": m.x, "y": m.y, "grade": m.grade,
+			"power": m.miningPower, "action": vein_action(m.id), "site_name": site.get("name", "지역"),
+			"rate": vein_rate(m) * _multiplier(), "haul": float(m.miningPower) * _multiplier()})
+	var lines: Array = []
+	var rules: Dictionary = data.balance.mining
+	for site: Dictionary in data.sites:
+		var group := {"id": site.key, "name": site.name, "unlocked": state.unlocked_sites.get(site.key, false) == true,
+			"cost": {"gold": site.unlockCost, "products": site.unlockProducts}, "resources": [], "recipes": []}
+		for row: Dictionary in data.resources:
+			if row.site != site.key:
+				continue
+			var facility := int(state.facility.get(row.key, 0))
+			var workforce := int(state.workforce.get(row.key, 0))
+			group.resources.append({"id": row.key, "name": row.name, "amount": float(state.inventory.get(row.key, 0)),
+				"auto": auto_rate(row.key), "manual": (float(row.base) + facility) * _multiplier(),
+				"facility": {"level": facility, "max": int(rules.FACILITY_MAX_LEVEL), "cost": _level_cost(rules.FACILITY_COST_BASE, rules.FACILITY_COST_GROWTH, facility)},
+				"workforce": {"level": workforce, "max": int(rules.WORKFORCE_MAX_LEVEL), "cost": _level_cost(rules.WORKFORCE_COST_BASE, rules.WORKFORCE_COST_GROWTH, workforce)}})
+		# web siteRelatedRecipeNames: recipes that use one of the site's raw resources directly.
+		for recipe: Dictionary in data.recipes:
+			for need: String in recipe.need:
+				if _tables.resources.get(need, {}).get("site") == site.key:
+					group.recipes.append(recipe.name)
+					break
+		lines.append(group)
+	return {"base": base, "veins": veins, "hidden": hidden, "lines": lines}
+
+## The line under the currencies (web updateNextHint / firstGoalHint / lateGameHint): what to do next.
+func next_hint() -> String:
+	var on := {}
+	for c: Dictionary in state.characters:
+		on[c.resource] = true
+	var touch := DisplayServer.is_touchscreen_available()
+	if not state.first_ticket:
+		var progress := "%s/%dG" % [Hud.format_quantity(float(state.gold)), int(data.balance.gacha.FIRST_TICKET_GOLD_THRESHOLD)]
+		var steel: Dictionary = _tables.recipes.steel
+		var step := ""
+		if float(state.inventory.get("steel", 0)) > 0.0 or _has(steel.need):
+			step = "공방 앞에서 열기 버튼을 눌러 강철을 만들어 파세요." if touch else "공방 앞에서 E를 눌러 강철을 만들어 파세요."
+		else:
+			step = "광맥 앞에서 행동 버튼으로 철광석과 석탄을 캐세요." if touch else "광맥 앞에서 E를 눌러 철광석과 석탄을 캐세요."
+		return step + " 첫 가챠권까지 " + progress
+	if state.characters.size() < int(data.balance.worker.MIN_REQUIRED):
+		return "인부 탭에서 가챠권으로 일꾼을 뽑으세요. 자동 제작은 연구 탭의 장치로 열어요." if int(state.tickets) >= 1 \
+			else "인부 탭에서 일꾼을 뽑으세요. 일꾼이 있으면 광석을 자동으로 캐 줘요."
+	if on.has("iron") != on.has("coal"):
+		return "%s은 아직 수동입니다. 일꾼을 한 명 더 뽑으면 강철도 완전 자동화할 수 있어요." % _label("coal" if on.has("iron") else "iron")
+	var auto_on: bool = state.completed_research.get("autoCraftDevice", false) == true
+	if on.has("iron") and on.has("coal") and state.automation.craft.get("steel", false) != true:
+		return "철광석/석탄 자동화 완료! 자동 제작을 켜면 강철도 자동으로 만들어져요." if auto_on \
+			else "철광석/석탄 자동화 완료! 연구 탭에서 자동 제작 장치를 연구하면 강철도 자동으로 만들 수 있어요."
+	if state.completed_research.get("deliveryContract", false) != true:
+		return "연구 탭에서 \"납품 계약\"을 연구하면 회사에 제품을 보내고 명성을 얻을 수 있어요."
+	return _late_game_hint()
+
+func _late_game_hint() -> String:
+	var order_hint := "납품 탭의 수주를 완수하면 명성을 얻어요. 명성이 오르면 더 많은 회사와 거래할 수 있습니다."
+	if Delivery.reputation(data, state) < 1:
+		return order_hint
+	if state.completed_research.get("workshopBuild", false) != true:
+		return "연구 탭의 \"제작소 건설\"로 제작소를 지으면 상위 제품을 따로 만들 수 있어요."
+	if world.workshops.is_empty():
+		return "제작 탭에서 제작소를 지어 보세요. 레시피를 정해 두면 따로 물건을 만들어 줘요."
+	if world.workshops.any(func(w: Dictionary) -> bool: return w.recipeKey == null):
+		return "레시피를 정하지 않은 제작소가 있어요. 제작소에 만들 제품을 골라 주세요."
+	var short := bottleneck_items()
+	if not short.is_empty():
+		return "제작소가 재료 때문에 멈춰 있어요. 가장 필요한 재료는 %s입니다. 채굴 탭이나 일꾼 배치를 살펴보세요." % short[0].name
+	var site := next_expansion_site()
+	if not site.is_empty() and float(state.gold) >= float(site.unlockCost) and _has(site.unlockProducts):
+		return "채굴 탭에서 %s을(를) 열 수 있어요. 새 자원으로 더 높은 제품을 만들 수 있습니다." % site.name
+	if state.tunnel_remaining > 0.0 and not world.tunnel_unlocked:
+		return "터널 공사가 진행 중이에요. 끝나면 산 너머로 갈 수 있습니다. 그동안 다른 일을 해 두세요."
+	if state.completed_research.get("tunnelWork", false) == true and not world.tunnel_unlocked:
+		return "연구 탭에서 터널 공사를 의뢰할 수 있어요. 산 너머의 희귀한 광맥으로 가는 길이 열립니다."
+	if not world.tunnel_unlocked and state.completed_research.get("tunnelWork", false) != true:
+		return "연구 탭의 \"터널 굴착\"으로 전문 굴착 업체와 계약하면 산 너머로 가는 길을 뚫을 수 있어요."
+	if world.tunnel_unlocked and world.discovered_count() < world.mines.size():
+		return "아직 발견하지 못한 광맥이 있어요. 맵을 돌아다니며 찾아보세요."
+	return order_hint
+
+## Items the stuck huts lack, most-needed first (web bottleneckReport().items): {id, name, short, huts}.
+func bottleneck_items() -> Array:
+	var missing := {}
+	for hut: Dictionary in world.workshops:
+		var st := hut_status(hut)
+		for s: Dictionary in st.shortages:
+			var m: Dictionary = missing.get(s.id, {"id": s.id, "name": _label(s.id), "short": 0.0, "huts": 0})
+			m.short += float(s.need) - float(s.have)
+			m.huts += 1
+			missing[s.id] = m
+	var items: Array = missing.values()
+	items.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.huts > b.huts or (a.huts == b.huts and a.short > b.short))
+	return items
 
 func is_resource_open(id: String) -> bool:
 	var resource: Dictionary = _tables.resources.get(id, {})
@@ -723,10 +902,10 @@ func is_resource_open(id: String) -> bool:
 func mine(id: String) -> bool:
 	if not is_resource_open(id):
 		return _reject("먼저 채굴 지대를 해금하세요.")
+	# The mining tab's button (web mineResource): no relic roll, that comes from mining a vein in the world.
 	var amount := (float(_tables.resources[id].base) + float(state.facility.get(id, 0))) * _multiplier()
 	_add(id, amount)
-	var relic_found := Village.mine(data, state.village, id)
-	return _updated("%s +%s%s" % [_label(id), _quantity(amount), " · 미감정 유물 발견" if relic_found else ""])
+	return _updated("%s +%s" % [_label(id), Hud.format_quantity(amount)])
 
 func craft(id: String) -> bool:
 	if _hut_only(id):
@@ -769,8 +948,8 @@ func _sell(id: String) -> float:
 
 func hire(id: String) -> bool:
 	var balance: Dictionary = data.balance.gacha
-	if state.characters.size() >= int(data.balance.worker.CAP_BASE):
-		return _reject("인부 정원이 가득 찼어요.")
+	if state.characters.size() >= worker_cap():
+		return _reject("인부 정원이 가득 찼어요. 거점을 확장하면 늘어나요.")
 	if id == "ticket" and int(state.tickets) >= int(balance.PULL_COST_TICKET):
 		state.tickets -= int(balance.PULL_COST_TICKET)
 	elif id == "gold" and float(state.gold) >= float(balance.PULL_COST_GOLD):
@@ -789,10 +968,57 @@ func hire(id: String) -> bool:
 		if is_resource_open(row.key):
 			available.append(row.key)
 	var resource_id: String = available.pick_random()
-	var worker_id := "%d-%d" % [Time.get_ticks_usec(), randi()]
-	state.characters.append({"id": worker_id, "rarity": rarity.key, "resource": resource_id,
-		"mining": rarity.mining, "carry": rarity.carry, "move": rarity.move, "miningLvl": 0, "carryLvl": 0, "moveLvl": 0})
+	var taken := {}
+	for c: Dictionary in state.characters:
+		taken[c.id] = true
+	var worker := {"id": _entity_id("w_", taken), "rarity": rarity.key, "resource": resource_id,
+		"mining": rarity.mining, "carry": rarity.carry, "move": rarity.move, "miningLvl": 0, "carryLvl": 0, "moveLvl": 0}
+	state.characters.append(worker)
+	state["last_pull"] = worker.duplicate()
+	_check_dual_automation()
 	return _updated("%s 인부 고용 · %s 배치" % [rarity.label, _label(resource_id)])
+
+## Workers the base holds: CAP_BASE + CAP_PER_BASE_LEVEL per base level above 1 (web workerCap).
+func worker_cap() -> int:
+	var rules: Dictionary = data.balance.worker
+	return int(rules.CAP_BASE) + int(rules.CAP_PER_BASE_LEVEL) * maxi(0, world.base_level - 1)
+
+## A worker stat upgrade: mining, carry or move +1 for gold, at most STAT_MAX_LEVEL times (web upgradeWorkerStat).
+func worker_upgrade_cost(worker: Dictionary, stat: String) -> int:
+	var rules: Dictionary = data.balance.worker
+	return _level_cost(float(rules.STAT_COST_BASE[stat]), float(rules.STAT_COST_GROWTH), int(worker.get(stat + "Lvl", 0)))
+
+func upgrade_worker(worker_id: String, stat: String) -> bool:
+	if stat not in ["mining", "carry", "move"]:
+		return false
+	for index in state.characters.size():
+		var worker: Dictionary = state.characters[index]
+		if worker.id != worker_id:
+			continue
+		if int(worker.get(stat + "Lvl", 0)) >= int(data.balance.worker.STAT_MAX_LEVEL):
+			return _reject("이미 최대로 강화했어요.")
+		if not _pay({"gold": worker_upgrade_cost(worker, stat)}):
+			return _reject("강화할 골드가 부족해요.")
+		worker[stat] = float(worker[stat]) + float(data.balance.worker.STAT_INCREMENT_PER_UPGRADE)
+		worker[stat + "Lvl"] = int(worker.get(stat + "Lvl", 0)) + 1
+		var label: String = data.stat_label.get(stat, stat)
+		return _updated("일꾼 강화 · #%d %s Lv.%d" % [index + 1, label, worker[stat + "Lvl"]])
+	return false
+
+## The first time iron and coal both have a worker (web checkDualAutomation): said once.
+func _check_dual_automation() -> void:
+	if state.get("auto_line_logged", false):
+		return
+	var on := {}
+	for c: Dictionary in state.characters:
+		on[c.resource] = true
+	if on.has("iron") and on.has("coal"):
+		state["auto_line_logged"] = true
+		feedback.emit("철광석/석탄 자동화 완료! 연구 탭의 자동 제작 장치로 강철 생산도 자동화할 수 있어요.")
+
+## web makeEntityId: prefix, the time in base 36 and six random base-36 characters.
+func _entity_id(prefix: String, taken: Dictionary) -> String:
+	return CraftHuts.new_id(taken, prefix)
 
 func assign_worker(worker_id: String, resource_id: String) -> bool:
 	if not is_resource_open(resource_id):
@@ -869,7 +1095,32 @@ func open_site(id: String) -> bool:
 	if not _pay({"gold": row.unlockCost, "products": row.unlockProducts}):
 		return _reject("채굴 지대 해금 비용이 부족해요.")
 	state.unlocked_sites[id] = true
+	_seed_site_veins(id)
 	return _updated("채굴 지대 해금 · " + row.name)
+
+## The site's seed veins next to the base, where no vein stands yet (web seedWorldMinesForSite).
+func _seed_site_veins(site: String) -> void:
+	world.seed_site(site, data.world_mine_seeds.get(site, []))
+	_record_world()
+
+## The next area in EXPANSION_SITE_ORDER, or {} when every area is open.
+func next_expansion_site() -> Dictionary:
+	for key in data.balance.world.EXPANSION_SITE_ORDER:
+		if not state.unlocked_sites.get(key, false):
+			return _tables.sites.get(key, {})
+	return {}
+
+## Expands the base: opens the next area and raises the base level, which makes room for more workers
+## (web expandBase).
+func expand_base(_id := "") -> bool:
+	var site := next_expansion_site()
+	if site.is_empty():
+		return false
+	if not open_site(str(site.key)):
+		return false
+	world.base_level += 1
+	_record_world()
+	return _updated("거점 확장 Lv.%d" % world.base_level)
 
 func upgrade(id: String) -> bool:
 	var option := _upgrade_option(id)
@@ -1216,42 +1467,39 @@ func _tick() -> bool:
 		if state.first_ticket:
 			state.tickets += 1
 			mutated = true
-	var mining_rates: Dictionary = {}
-	for worker: Dictionary in state.characters:
-		var id: String = worker.resource
-		var rate := float(worker.mining) * float(worker.carry) * float(worker.move) / float(data.balance.worker.EFFECTIVE_DIVISOR)
-		mining_rates[id] = float(mining_rates.get(id, 0.0)) + rate
-	for id: String in state.workforce:
-		var bonus := float(state.workforce[id]) * float(data.balance.mining.WORKFORCE_BONUS_MULTIPLIER)
-		mining_rates[id] = float(mining_rates.get(id, 0.0)) + bonus
-	var multiplier := _multiplier()
-	for id: String in mining_rates:
-		if mining_rates[id] > 0.0 and is_resource_open(id):
-			_add(id, float(mining_rates[id]) * multiplier * TICK)
+	# web tickMining: every resource's autoRate (workers, workforce, secured veins, times the multiplier),
+	# added as rate / TICKS_PER_SECOND.
+	for row: Dictionary in data.resources:
+		var rate := auto_rate(str(row.key))
+		if rate > 0.0:
+			_add(str(row.key), rate / TICKS_PER_SECOND)
 			mutated = true
 	var speed := (1.0 + maxf(0.0, float(state.craft_facility) - 1.0) * float(data.balance.crafting.FACILITY_SPEED_PER_LEVEL)) \
 		* (1.0 + Delivery.reputation_effect(data, state, "craftSpeed"))
-	for id: String in state.queue.keys():
-		state.queue[id] -= speed * TICK
-		if state.queue[id] <= 0.00001:
-			state.queue.erase(id)
-			_add(id, float(_tables.recipes[id].out))
-		mutated = true
-	if state.completed_research.get("autoCraftDevice", false):
-		for id: String in state.automation.craft:
-			var target := int(state.automation.target.get(id, 0))
-			if state.automation.craft[id] and (target == 0 or float(state.inventory.get(id, 0)) < target):
-				mutated = _start_craft(id) or mutated
-	# The web tickStep order: recipe cards, then the huts, then trade, orders and auto-sell.
+	# web tickCrafting, recipe by recipe: a running craft counts down by speed / TICKS_PER_SECOND and finishes
+	# at 0 or below; otherwise its automation may start one (not in the tick a craft finished).
+	var auto_unlocked: bool = state.completed_research.get("autoCraftDevice", false) == true
+	for row: Dictionary in data.recipes:
+		var id := str(row.key)
+		if state.queue.has(id):
+			state.queue[id] = float(state.queue[id]) - speed / TICKS_PER_SECOND
+			if state.queue[id] <= 0.0:
+				state.queue.erase(id)
+				_add(id, float(row.out))
+			mutated = true
+		elif state.automation.craft.get(id, false) == true and auto_unlocked and not row.get("workshopOnly", false) \
+				and not _at_craft_target(id):
+			mutated = _start_craft(id) or mutated
+	# The web tickStep order: recipe cards, the huts, regular trade, orders, then auto-sell.
 	mutated = _tick_huts() or mutated
-	for id: String in state.automation.sell:
-		if state.automation.sell[id] and state.automation.sell_owned.get(id, false):
-			# Original canAutoSell: only recipes marked workshopOnly are excluded; the flag defaults to false.
-			if not _tables.recipes.get(id, {}).get("workshopOnly", false):
-				mutated = (_sell(id) > 0.0) or mutated
-	var delivery := Delivery.tick(data, state, TICK, multiplier)
+	var delivery := Delivery.tick(data, state, TICK, _multiplier())
 	for message: String in delivery.get("messages", []):
 		feedback.emit(message)
+	for row: Dictionary in data.recipes:
+		var id := str(row.key)
+		# Original canAutoSell: only recipes marked workshopOnly are excluded; the flag defaults to false.
+		if not row.get("workshopOnly", false) and state.automation.sell_owned.get(id, false) and state.automation.sell.get(id, false):
+			mutated = (_sell(id) > 0.0) or mutated
 	return bool(delivery.get("changed", false)) or mutated
 
 func _valid_save_state(imported: Dictionary) -> bool:
@@ -1284,7 +1532,7 @@ func _valid_save_state(imported: Dictionary) -> bool:
 		return false
 	if not (imported.get("gold") is int or imported.get("gold") is float) or float(imported.gold) < 0.0:
 		return false
-	for key in ["inventory", "completed_research", "unlocked_sites", "automation", "queue", "facility", "workforce", "stats", "position", "legacy_web_save", "delivery"]:
+	for key in ["inventory", "completed_research", "unlocked_sites", "automation", "queue", "facility", "workforce", "stats", "position", "legacy_web_save", "delivery", "last_pull"]:
 		if imported.has(key) and not imported[key] is Dictionary:
 			return false
 	if not imported.get("inventory") is Dictionary:

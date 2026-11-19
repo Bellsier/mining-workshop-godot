@@ -70,11 +70,11 @@ static func is_valid_cell(value: Variant, axis: String, seeded := false) -> bool
 	return v >= low and v <= high
 
 
-## web makeEntityId("workshop_", ...): the time in base 36 and six random base-36 characters.
-static func new_id(taken: Dictionary) -> String:
+## web makeEntityId(prefix, ...): the prefix, the time in base 36 and six random base-36 characters.
+static func new_id(taken: Dictionary, prefix := "workshop_") -> String:
 	var id := ""
 	while id.is_empty() or taken.has(id):
-		id = "workshop_" + _base36(int(Time.get_unix_time_from_system() * 1000.0))
+		id = prefix + _base36(int(Time.get_unix_time_from_system() * 1000.0))
 		for i in 6:
 			id += "0123456789abcdefghijklmnopqrstuvwxyz"[randi() % 36]
 	return id

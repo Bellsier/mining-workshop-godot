@@ -117,6 +117,40 @@ func run_survey() -> Array:
 	survey_completed.emit(added)
 	return added
 
+# --- securing and site seeds ---------------------------------------------------------------------------
+
+## Marks a vein secured (web secureMine; the caller checks it is found and its area open).
+func secure(id: String) -> bool:
+	var m := mine_by_id(id)
+	if m.is_empty() or m.get("developmentState") != "unsecured":
+		return false
+	m.developmentState = "secured"
+	_record_edit(id)
+	return true
+
+## A site's seed veins at their offsets from the base, unhidden, where no vein stands yet
+## (web seedWorldMinesForSite / addMine: a taken id gets a new one). Returns the veins added.
+func seed_site(site: String, seeds: Array) -> Array:
+	var added: Array = []
+	for seed: Dictionary in seeds:
+		var x := base.x + int(seed.x)
+		var y := base.y + int(seed.y)
+		if mines.any(func(m: Dictionary) -> bool: return int(m.x) == x and int(m.y) == y):
+			continue
+		if not CraftHuts.is_valid_cell(x, "x", is_seeded()) or not CraftHuts.is_valid_cell(y, "y", is_seeded()):
+			continue
+		var id := "mine_%s_%s" % [site, seed.resource]
+		if not mine_by_id(id).is_empty():
+			var taken := {}
+			for m: Dictionary in mines:
+				taken[m.id] = true
+			id = CraftHuts.new_id(taken, "mine_")
+		var vein := {"id": id, "x": x, "y": y, "resource": str(seed.resource), "grade": int(seed.grade),
+			"miningPower": int(seed.miningPower), "developmentState": "unsecured"}
+		mines.append(vein)
+		added.append(vein)
+	return added
+
 # --- discovery ------------------------------------------------------------------------------------------
 
 func is_discovered(mine: Dictionary) -> bool:

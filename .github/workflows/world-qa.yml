@@ -73,6 +73,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/craft-huts"
           MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/craft-huts" godot --headless --path . --script res://tools/craft_hut_test.gd 2>&1 | tee "$RUNNER_TEMP/craft-huts.log"
           grep -F 'CRAFT HUT PASS' "$RUNNER_TEMP/craft-huts.log"
+      - name: Economy matches the web original (tick income, crafting order, costs, expansion, veins)
+        shell: bash
+        run: |
+          set -o pipefail
+          godot --headless --path . --script res://tools/economy_parity_test.gd 2>&1 | tee "$RUNNER_TEMP/economy.log"
+          grep -F 'ECONOMY PARITY PASS' "$RUNNER_TEMP/economy.log"
       - name: Large saves with huts (import, autosave, load times and nothing lost)
         shell: bash
         run: |

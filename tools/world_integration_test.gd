@@ -23,7 +23,11 @@ func _run() -> void:
 	check(not g.mine_vein(hidden), "hidden vein cannot be mined")
 	var iron = w.mines.filter(func(m): return m.resource == "iron")[0]
 	w.discover(iron.id)
-	check(g.mine_vein(iron.id), "discovered iron can be mined")
+	check(not g.mine_vein(iron.id) and g.vein_action(iron.id) == "secure", "a found vein is secured before it is mined (web interact)")
+	check(g.secure_vein(iron.id) and g.vein_action(iron.id) == "mine", "the found iron vein is secured")
+	var iron_before := float(g.state.inventory.get("iron", 0.0))
+	check(g.mine_vein(iron.id) and float(g.state.inventory.iron) == iron_before + float(iron.miningPower) * g._multiplier(),
+		"a secured vein mines miningPower times the multiplier")
 	g.state.gold = 300000.0
 	g.state.inventory.merge({"alloy": 5.0, "manaLamp": 4.0, "steelGear": 5.0, "crystalLens": 3.0}, true)
 	check(not g.order_tunnel(), "research required for construction")
