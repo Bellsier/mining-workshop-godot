@@ -295,7 +295,7 @@ func _large_and_abnormal_numbers() -> void:
 	root.remove_child(hud)
 	hud.free()
 	# NaN and infinity cannot be written in JSON; numbers out of range are refused, not read as infinity.
-	var before := game.state.duplicate(true)
+	var before: Dictionary = game.state.duplicate(true)
 	_check(not game.import_save("{\"saveVersion\":1,\"run\":{\"gold\":1e999,\"resources\":{},\"products\":{}}}"), "a JS save with gold 1e999 is refused")
 	_check(not game.import_save("{\"version\":1,\"state\":{\"gold\":5,\"inventory\":{\"iron\":-1e999}}}"), "a Godot save with an out-of-range amount is refused")
 	_check(not game._valid_save_state({"gold": INF, "inventory": {}}) and not game._valid_save_state({"gold": 1.0, "inventory": {"iron": NAN}}), "NaN and infinity in a state are refused")
