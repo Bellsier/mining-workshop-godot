@@ -3,7 +3,8 @@ extends SceneTree
 ##   MINING_QA_ISOLATED=1 XDG_DATA_HOME=<empty temp dir> godot --headless --path . --script res://tools/save_recovery_test.gd
 ## Checks that an unreadable or newer-version save is never overwritten without an export first, that
 ## setting it aside keeps the original bytes, that failed writes back off and leave the last good save,
-## and that walking alone does not rewrite the file every autosave tick.
+## that walking alone does not rewrite the file every autosave tick, and that what the game produces by
+## itself (workers, huts) is saved by the regular autosave without showing "pending" after every tick.
 ## Prints "SAVE RECOVERY PASS" and exits 0, or lists the failures and exits 1.
 
 const Workshop = preload("res://scripts/workshop.gd")
@@ -50,6 +51,8 @@ func _run() -> void:
 	_failed_write_backs_off()
 	_clear_user_folder()
 	_position_only_is_not_rewritten()
+	_clear_user_folder()
+	_background_production_keeps_saved_label()
 	_clear_user_folder()
 	if _failures.is_empty():
 		print("SAVE RECOVERY PASS")
@@ -159,4 +162,30 @@ func _position_only_is_not_rewritten() -> void:
 	g._mark_dirty()
 	g.flush()
 	_check(float(Save.load_game().get("gold", 0)) == 2.0, "gameplay changes are saved on the next tick")
+	g.free()
+
+## Workers mine every 0.1 s tick. That is written by the 2 s autosave, but it must not hold the label at
+## "pending" forever (the web E2E waited for "saved" that never came while a commit outlasted a tick).
+## A player action still shows "pending" until it is saved.
+func _background_production_keeps_saved_label() -> void:
+	var g := _game()
+	g.state.unlocked_sites.abandonedMine = true
+	g.state.characters.append({"id": "w1", "rarity": "common", "resource": "iron", "mining": 1, "carry": 2, "move": 1})
+	g._mark_dirty()
+	g.flush(true)
+	_check(g.save_status == "saved", "a first save is written: %s" % g.save_status)
+	var iron := float(g.state.inventory.get("iron", 0))
+	for i in 5:
+		g._process(0.1)
+	_check(float(g.state.inventory.get("iron", 0)) > iron, "the worker mined during the ticks")
+	_check(g.save_status == "saved", "background production keeps the label at saved: %s" % g.save_status)
+	_check(g._dirty and g._dirty_gameplay, "background production is still waiting for the next autosave")
+	g._save_elapsed = Workshop.AUTOSAVE_INTERVAL
+	g._process(0.0)
+	_check(float(Save.load_game().get("inventory", {}).get("iron", 0)) == float(g.state.inventory.iron),
+		"the regular autosave wrote the mined iron")
+	g.mine("iron")
+	_check(g.save_status == "pending", "a player action shows pending: %s" % g.save_status)
+	g.flush()
+	_check(g.save_status == "saved", "and saved once written: %s" % g.save_status)
 	g.free()

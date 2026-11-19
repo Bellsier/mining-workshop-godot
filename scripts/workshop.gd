@@ -75,6 +75,11 @@ var _retry_count := 0
 var _last_commit_at := -INF
 var _flush_after_operation := false
 var _web_candidate_gameplay := false
+## A change the save label should show as waiting ("pending"): a player action or a move. What the game
+## produces by itself every tick (workers, huts, timers) is only written by the regular autosave, as in the
+## web original, whose label keeps showing the last save between its periodic saves.
+var _dirty_shown := false
+var _web_candidate_shown := false
 
 func _ready() -> void:
 	var catalog: Variant = JSON.parse_string(FileAccess.get_file_as_string(CATALOG))
@@ -107,6 +112,7 @@ func _load_initial_state(saved: Dictionary, present: bool) -> void:
 	_clear_protected()
 	_dirty = false
 	_dirty_gameplay = false
+	_dirty_shown = false
 	if present and not _valid_save_state(saved):
 		_protect(Save.read_raw(), "", ProjectSettings.globalize_path(Save.SAVE_PATH))
 		_restore({})
@@ -131,10 +137,13 @@ func _set_save_status(status: String, detail := "") -> void:
 	save_detail = detail
 	save_status_changed.emit(status)
 
-func _mark_dirty(position_only := false) -> void:
+func _mark_dirty(position_only := false, background := false) -> void:
 	_dirty = true
 	if not position_only:
 		_dirty_gameplay = true
+	if background:
+		return
+	_dirty_shown = true
 	if save_status in ["idle", "saved", "saved_basic"] and persistence_enabled:
 		_set_save_status("pending")
 
@@ -213,6 +222,7 @@ func _on_web_load(args: Array) -> void:
 	_migrated_from = ""
 	_dirty = false
 	_dirty_gameplay = false
+	_dirty_shown = false
 	match status:
 		"loaded", "migrate":
 			var parsed := Save.parse_game(text)
@@ -497,13 +507,13 @@ func _restore(source: Dictionary) -> void:
 		state.position = {}
 	_record_world()
 
-func _record_world() -> void:
+func _record_world(background := false) -> void:
 	if world == null:
 		return
 	var value: Dictionary = world.to_dict()
 	if state.get("world", {}) != value:
 		state["world"] = value
-		_mark_dirty()
+		_mark_dirty(false, background)
 	state.tunnel_open = world.tunnel_unlocked
 
 func mine_vein(id: String) -> bool:
@@ -1027,6 +1037,7 @@ func _apply_import(candidate: Dictionary, message := "저장 불러오기 완료
 	_restore(candidate)
 	_dirty = false
 	_dirty_gameplay = false
+	_dirty_shown = false
 	if persistence_enabled:
 		_set_save_status(_saved_status())
 	world_replaced.emit()
@@ -1084,11 +1095,14 @@ func _on_web_commit(args: Array) -> void:
 			_apply_import(candidate, "원본 저장은 브라우저에 따로 보관했어요. 새 저장을 시작했어요.")
 		else:
 			_record_position()
-			_set_save_status("pending" if _dirty else _saved_status())
+			# Saved unless a player action or move came after this snapshot; what the game produced by
+			# itself since then goes out with the next regular autosave.
+			_set_save_status("pending" if _dirty_shown else _saved_status())
 	else:
 		if operation == "autosave":
 			_dirty = true
 			_dirty_gameplay = _dirty_gameplay or bool(_web_candidate_gameplay)
+			_dirty_shown = _dirty_shown or _web_candidate_shown
 		match status:
 			"conflict":
 				_save_blocked = true
@@ -1106,6 +1120,7 @@ func _on_web_commit(args: Array) -> void:
 			if operation == "set_aside" and status != "conflict":
 				_enter_choice("protected", _protected_reason)
 	_web_candidate_gameplay = false
+	_web_candidate_shown = false
 	if _flush_after_operation:
 		_flush_after_operation = false
 		flush(true)
@@ -1130,7 +1145,7 @@ func flush(force := false) -> void:
 		if force:
 			_flush_after_operation = true
 		return
-	_record_world()
+	_record_world(true)
 	_record_position()
 	if not _dirty:
 		return
@@ -1142,11 +1157,14 @@ func flush(force := false) -> void:
 	if OS.has_feature("web"):
 		# Changes made while this transaction runs get their own snapshot.
 		_web_candidate_gameplay = _dirty_gameplay
+		_web_candidate_shown = _dirty_shown
 		_dirty = false
 		_dirty_gameplay = false
+		_dirty_shown = false
 		if not _start_web_commit("autosave", state, _web_revision):
 			_dirty = true
 			_dirty_gameplay = _web_candidate_gameplay
+			_dirty_shown = _web_candidate_shown
 		return
 	var result := Save.save_game(state)
 	if result == OK:
@@ -1155,6 +1173,7 @@ func flush(force := false) -> void:
 		_retry_at = 0.0
 		_dirty = false
 		_dirty_gameplay = false
+		_dirty_shown = false
 		_last_commit_at = now
 		_set_save_status("saved")
 	else:
@@ -1171,7 +1190,9 @@ func _process(delta: float) -> void:
 		_elapsed -= TICK
 		mutated = _tick() or mutated
 	if mutated:
-		_updated()
+		# Produced by the game itself: written by the regular autosave, not shown as waiting.
+		_mark_dirty(false, true)
+		changed.emit()
 	if _save_elapsed >= AUTOSAVE_INTERVAL:
 		_save_elapsed = 0.0
 		flush()
