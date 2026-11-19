@@ -1,0 +1,16 @@
+name: Float diag
+on:
+  push:
+    branches: [claude/diag-float-format]
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: bash
+        run: |
+          release=https://github.com/godotengine/godot-builds/releases/download/4.4.1-stable
+          archive=Godot_v4.4.1-stable_linux.x86_64.zip
+          curl --fail -sSL -o "$RUNNER_TEMP/$archive" "$release/$archive"
+          unzip -q "$RUNNER_TEMP/$archive" -d "$RUNNER_TEMP"
+          "$RUNNER_TEMP/${archive%.zip}" --headless --path . --script res://tools/diag_float.gd 2>&1 | grep DIAG
