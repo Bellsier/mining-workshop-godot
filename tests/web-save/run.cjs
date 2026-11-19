@@ -439,7 +439,13 @@ async function s2Import({ page, baseline, note, shot }) {
   const imported = await store.read(page);
   assert.equal(imported.state.gold, 37);
   assert.equal(iron(imported), 7);
-  assert.deepEqual(imported.state.legacy_web_save, legacy);
+  // The JS original is stored as the exact imported text (Godot would round a parsed copy's numbers).
+  const keptPayload = state => {
+    const kept = JSON.parse(state.legacy_web_save_source);
+    return kept.snapshot ? kept.snapshot.payload : kept;
+  };
+  assert.equal(imported.state.legacy_web_save_source, json);
+  assert.deepEqual(keptPayload(imported.state), legacy);
   // The replaced save is kept under its own key in the same transaction.
   const before = await store.raw(page, 'get', 'slot:main:before-import');
   assert.equal(before.revision, baseline.revision);
@@ -461,8 +467,9 @@ async function s2Import({ page, baseline, note, shot }) {
   await verifyReload(page, durable);
   assert.equal((await pos(page)).x, 128);
   // The JS original stays as imported after autosave and reload.
-  assert.deepEqual((await store.read(page)).state.legacy_web_save, legacy);
-  assert.equal((await store.read(page)).state.legacy_web_save_source, json, 'the imported text is kept exactly');
+  const reloaded = (await store.read(page)).state;
+  assert.equal(reloaded.legacy_web_save_source, json, 'the imported text is kept exactly');
+  assert.deepEqual(keptPayload(reloaded), legacy);
   note({ failedImportPreserved: true, s2ImportedAfterCommit: true, replacedSaveBackedUp: true });
 }
 

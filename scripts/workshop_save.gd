@@ -59,7 +59,14 @@ static func save_game(state: Dictionary) -> Error:
 static func export_game(state: Dictionary) -> String:
 	if state.is_empty() or not _is_json_value(state):
 		return ""
-	return JSON.stringify({"version": SAVE_VERSION, "state": state}, "", true, true)
+	var stored := state
+	# Godot writes numbers with 15 significant digits, so a parsed copy of the imported JS save would
+	# drift on every save. With the exact text kept, only the text is written; parse_game rebuilds the copy.
+	var source: Variant = state.get("legacy_web_save_source")
+	if source is String and not source.is_empty() and state.has("legacy_web_save"):
+		stored = state.duplicate()
+		stored.erase("legacy_web_save")
+	return JSON.stringify({"version": SAVE_VERSION, "state": stored}, "", true, true)
 
 
 static func parse_game(text: String) -> Dictionary:
@@ -67,7 +74,14 @@ static func parse_game(text: String) -> Dictionary:
 	if not _is_version(envelope.get("version"), SAVE_VERSION):
 		return {}
 	var state: Variant = envelope.get("state")
-	return state if state is Dictionary else {}
+	if not state is Dictionary:
+		return {}
+	var source: Variant = state.get("legacy_web_save_source")
+	if source is String:
+		var payload := legacy_payload(source)
+		if not payload.is_empty():
+			state["legacy_web_save"] = payload
+	return state
 
 
 ## The game payload of a web save text (v1 payload, S2 snapshot or snapshot row); {} if it is not one.

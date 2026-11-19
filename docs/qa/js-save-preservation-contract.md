@@ -6,12 +6,14 @@ Godot PR #1 `f14d45d` + 1차 수정 브랜치 `claude/feature-parity-p0`.
 ## 용어
 
 - **원본 보존**: 가져온 JSON 텍스트를 `state.legacy_web_save_source`에 **바이트 그대로** 둔다(S2 봉투 포함).
-  게임 본문(`{saveVersion, savedAt, permanent, run}`)은 불러올 때마다 이 텍스트에서 다시 읽어 `state.legacy_web_save`에 둔다.
+  게임 본문(`{saveVersion, savedAt, permanent, run}`)은 불러올 때마다 이 텍스트에서 다시 읽어 `state.legacy_web_save`에 둔다
+  (`Save.parse_game`). 저장 파일·IndexedDB에는 텍스트만 쓰고 파싱한 사본은 쓰지 않는다(`Save.export_game`).
   Godot는 둘 다 읽기만 하고 고치지 않는다. 가져오기 → 자동 저장 → 다시 불러오기 → 내보내기 → 다시 가져오기를 거쳐도
   텍스트는 바이트 단위로, 본문은 값 단위로 같다
   (`tools/parity_fixes_test.gd`의 `_legacy_save_is_kept`, 웹은 `tests/web-save/run.cjs`의 `s2-import`).
-- 텍스트로 두는 이유: Godot 4.4.1의 JSON은 일부 숫자(예: `0.30000000000000004`, `1/3`)를 저장 후 다시 읽으면
-  다른 double이 된다(CI에서 확인). 본문을 딕셔너리로만 저장하면 저장할 때마다 원본 숫자가 1ulp씩 어긋날 수 있다.
+- 텍스트로 두는 이유: Godot 4.4.1의 `JSON.stringify(..., full_precision=true)`는 숫자를 유효숫자 15자리로 쓴다
+  (CI 로그: `1/3` → `0.333333333333333`, `0.30000000000000004` → `0.3`). 본문을 딕셔너리로 저장하면 원본 숫자가 바뀐다.
+  같은 이유로 Godot 자체 게임 값(골드·재고 등)도 저장할 때 15자리로 반올림된다 — 게임 진행에는 영향이 없는 크기다.
 - **활성 복원**: 그 값을 Godot 게임 상태로 옮겨 실제 게임에 반영한다.
 - **미복원**: 원본에는 남아 있지만 Godot 게임에는 반영되지 않는다. 해당 기능을 이식할 때 `legacy_web_save`에서 읽어 복원한다.
 

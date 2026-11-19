@@ -300,6 +300,9 @@ func _legacy_save_is_kept() -> void:
 	_kept(game.state.legacy_web_save, original, "legacy_web_save equals the JS save after import")
 	_check(game.state.get("legacy_web_save_source") == text, "the imported JS text is kept byte for byte")
 	_kept(Save.load_game().get("legacy_web_save"), original, "legacy_web_save equals the JS save in the written file")
+	var file_state: Dictionary = JSON.parse_string(Save.read_raw()).state
+	_check(file_state.get("legacy_web_save_source") == text and not file_state.has("legacy_web_save"),
+		"the file stores the exact JS text, not a rounded parsed copy")
 	# Play, autosave, and play again: the original payload is data, never rewritten by the game.
 	game.mine("iron")
 	game.state.gold = float(game.state.gold) + 5.0
