@@ -526,12 +526,15 @@ func _render_recipes(recipes: Array, inventory: Dictionary, automation: Dictiona
 		var inputs: Dictionary = recipe.get("inputs", recipe.get("need", {}))
 		var count := int(recipe.get("count", recipe.get("out", 1)))
 		var seconds := ceili(float(recipe.get("remaining", 0)))
-		var ready := seconds == 0 and bool(recipe.get("available", true)) and _has_items(inventory, inputs)
+		var hut_only := bool(recipe.get("hut_only", false))
+		var ready := seconds == 0 and not hut_only and bool(recipe.get("available", true)) and _has_items(inventory, inputs)
 		var description := "%s  →  %d개" % [_describe_items(inputs), count]
+		if hut_only:
+			description += " · 제작소 전용"
 		if seconds > 0:
 			description += " · %d초 남음" % seconds
 		var actions := _add_row(_name_for(id), description, "제작", "craft", id, ready)
-		if auto_craft_unlocked and automation.has("craft") and _workshop.has_method("set_auto_craft"):
+		if auto_craft_unlocked and automation.has("craft") and _workshop.has_method("set_auto_craft") and not hut_only:
 			_add_toggle(actions, "자동 제작", "set_auto_craft", id, bool(auto_craft.get(id, false)))
 			if _workshop.has_method("set_craft_target"):
 				_add_craft_target(actions, id, int(targets.get(id, 0)))

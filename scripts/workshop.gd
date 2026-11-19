@@ -25,6 +25,9 @@ const LOAD_RETRY_DELAYS := [0.5, 1.5, 3.0]
 const FAILURE_RETRY_DELAYS := [2.0, 4.0, 8.0, 16.0, 30.0]
 const QUOTA_RETRY_DELAYS := [15.0, 30.0, 60.0]
 const LOCK_WAIT_MS := 3000
+## Workshop-only recipes (catalog workshopOnly) are made only in a craft hut, as in the web original's
+## startCraft. Switched on together with the huts themselves: with it off they are made on the recipe cards.
+const WORKSHOP_ONLY_IN_HUTS := true
 ## Statuses that need the player's decision before saving can go on.
 const CHOICE_STATUSES := ["unavailable", "other_tab", "protected", "conflict"]
 
@@ -688,7 +691,7 @@ func snapshot() -> Dictionary:
 		recipes.append({"id": row.key, "name": row.name, "inputs": row.need, "output": row.key,
 			"count": row.out, "sell": row.sell, "time": row.craftTime, "remaining": state.queue.get(row.key, 0),
 			"workshop_only": row.get("workshopOnly", false), "auto_sell_cost": _auto_sell_cost(row),
-			"locked": Delivery._needs_locked_resource(data, state, row, [])})
+			"locked": Delivery._needs_locked_resource(data, state, row, []), "hut_only": _hut_only(row.key)})
 	for row: Dictionary in data.research:
 		research.append({"id": row.key, "name": row.name, "cost": _research_cost(row), "requires": row.requires, "description": row.desc})
 	for row: Dictionary in data.sites:
@@ -716,13 +719,15 @@ func mine(id: String) -> bool:
 	return _updated("%s +%s%s" % [_label(id), _quantity(amount), " · 미감정 유물 발견" if relic_found else ""])
 
 func craft(id: String) -> bool:
+	if _hut_only(id):
+		return _reject("제작소 전용 레시피예요. 제작소에서 만들어 주세요.")
 	if not _start_craft(id):
 		return _reject("재료가 부족하거나 제작 중이에요.")
 	return _updated("%s %s" % [_label(id), "제작 시작" if state.queue.has(id) else "제작 완료"])
 
 func _start_craft(id: String) -> bool:
 	var recipe: Dictionary = _tables.recipes.get(id, {})
-	if recipe.is_empty() or state.queue.has(id) or not _has(recipe.need):
+	if recipe.is_empty() or _hut_only(id) or state.queue.has(id) or not _has(recipe.need):
 		return false
 	_consume(recipe.need)
 	if float(recipe.craftTime) > 0.0:
@@ -730,6 +735,10 @@ func _start_craft(id: String) -> bool:
 	else:
 		_add(id, float(recipe.out))
 	return true
+
+## Made only in a craft hut. A craft already running on the recipe card (an older save) still finishes.
+func _hut_only(id: String) -> bool:
+	return WORKSHOP_ONLY_IN_HUTS and _tables.recipes.get(id, {}).get("workshopOnly", false) == true
 
 func sell(id: String) -> bool:
 	var earned := _sell(id)
@@ -903,6 +912,8 @@ func _level_cost(base: float, growth: float, level: int) -> int:
 func set_auto_craft(id: String, enabled: bool) -> bool:
 	if not _tables.recipes.has(id) or not state.completed_research.get("autoCraftDevice", false):
 		return _reject("자동 제작 장치 연구가 필요해요.")
+	if enabled and _hut_only(id):
+		return _reject("제작소 전용 레시피는 제작소에서 자동 제작을 켜 주세요.")
 	state.automation.craft[id] = enabled
 	return _updated()
 
