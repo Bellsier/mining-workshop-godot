@@ -309,6 +309,16 @@ async function otherTab({ page, context, origin, baseline, note, shot }) {
   note({ secondTabBlocked: true, savePreserved: true });
 }
 
+// An engine crash reaches the console as a bare message ("RuntimeError: Out of bounds memory access"). Log the
+// stack of every Error the page reports too, so the log shows where in the WebAssembly it happened.
+function keepErrorStacks() {
+  const report = console.error.bind(console);
+  console.error = (...args) => {
+    for (const arg of args) if (arg instanceof Error && arg.stack) console.log('error stack: ' + arg.stack);
+    report(...args);
+  };
+}
+
 async function runCase(browser, origin, [name, run], mobile = false, needsFixture = true, faults = null) {
   const id = engine + '-' + (mobile ? 'mobile-' : 'desktop-') + name;
   const viewport = mobile ? { width: 568, height: 320 } : { width: 960, height: 540 };
@@ -317,6 +327,7 @@ async function runCase(browser, origin, [name, run], mobile = false, needsFixtur
   const entry = { id, viewport, status: 'RUNNING', console: [], checks: [] };
   results.cases.push(entry);
   await context.addInitScript(installFaults, faults);
+  await context.addInitScript(keepErrorStacks);
   const page = await context.newPage();
   page.setDefaultTimeout(18000);
   page.on('console', msg => entry.console.push({ type: msg.type(), text: msg.text() }));
@@ -550,22 +561,29 @@ async function main() {
     browser = await type.launch({ executablePath: engine === 'chromium' ? process.env.SAVE_QA_CHROMIUM : undefined,
       headless: process.env.SAVE_QA_HEADED !== '1', args, firefoxUserPrefs });
     results.browser = browser.version();
-    // Firefox has no mobile emulation in Playwright; the mobile pass runs in Chromium and WebKit.
-    const mobiles = engine === 'firefox' ? [false] : [false, true];
-    for (const mobile of mobiles) {
-      for (const scenario of scenarios) await runCase(browser, origin, scenario, mobile);
+    // SAVE_QA_REPEAT=<n>: only boot, prepare and reload the game n times (desktop and phone in turn), to measure
+    // how often the engine fails to start in this browser. See docs/qa/webkit-wasm-crash.md.
+    const repeat = Number(process.env.SAVE_QA_REPEAT || 0);
+    if (repeat > 0) {
+      for (let i = 0; i < repeat; i++) await runCase(browser, origin, ['boot-' + (i + 1), async () => {}], engine !== 'firefox' && i % 2 === 1);
+    } else {
+      // Firefox has no mobile emulation in Playwright; the mobile pass runs in Chromium and WebKit.
+      const mobiles = engine === 'firefox' ? [false] : [false, true];
+      for (const mobile of mobiles) {
+        for (const scenario of scenarios) await runCase(browser, origin, scenario, mobile);
+      }
+      await runCase(browser, origin, ['legacy-migration', legacyMigration], false, false);
+      await runCase(browser, origin, ['folder-key-migration', folderKeyMigration], false, false);
+      await runCase(browser, origin, ['s2-import', s2Import]);
+      await runCase(browser, origin, ['file-import', fileImport]);
+      await runCase(browser, origin, ['timeout-recovery', timeoutRecovery]);
+      await runCase(browser, origin, ['basic-durability', unverifiedDurability]);
+      await runCase(browser, origin, ['quota-refusal', quotaRefusal]);
+      await runCase(browser, origin, ['hide-flush', hideFlush]);
+      await runCase(browser, origin, ['other-tab', otherTab]);
+      await runCase(browser, origin, ['protected-future', protectedFuture], false, false);
+      await runCase(browser, origin, ['load-failure', loadFailure], false, false, { failOpen: true });
     }
-    await runCase(browser, origin, ['legacy-migration', legacyMigration], false, false);
-    await runCase(browser, origin, ['folder-key-migration', folderKeyMigration], false, false);
-    await runCase(browser, origin, ['s2-import', s2Import]);
-    await runCase(browser, origin, ['file-import', fileImport]);
-    await runCase(browser, origin, ['timeout-recovery', timeoutRecovery]);
-    await runCase(browser, origin, ['basic-durability', unverifiedDurability]);
-    await runCase(browser, origin, ['quota-refusal', quotaRefusal]);
-    await runCase(browser, origin, ['hide-flush', hideFlush]);
-    await runCase(browser, origin, ['other-tab', otherTab]);
-    await runCase(browser, origin, ['protected-future', protectedFuture], false, false);
-    await runCase(browser, origin, ['load-failure', loadFailure], false, false, { failOpen: true });
     results.status = results.cases.every(c => c.status === 'PASS') ? 'PASS' : 'FAIL';
     if (results.status !== 'PASS') process.exitCode = 1;
   } finally {
