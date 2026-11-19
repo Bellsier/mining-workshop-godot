@@ -187,12 +187,15 @@ func _order_timer() -> void:
 
 func _quantity_format() -> void:
 	# Expected strings come from the original fmt() run in Node (Intl ko-KR).
-	var cases := [[0.0, "0"], [0.5, "0.5"], [0.25, "0.3"], [0.75, "0.8"], [0.05, "0.1"], [0.04, "0.0"],
-		[9.96, "10.0"], [9.94, "9.9"], [1.0, "1"], [12.7, "12"], [1234567.8, "1,234,567"],
-		[0.30000000000000004, "0.3"], [1.15, "1.1"], [2.35, "2.4"], [-1.0, "0"]]
+	# Values are built by division (correctly rounded, the same doubles as the JS literals): a GDScript
+	# decimal literal such as 1.15 can be read one unit in the last place away from the JS value.
+	var cases := [[0.0, "0"], [5.0 / 10.0, "0.5"], [25.0 / 100.0, "0.3"], [75.0 / 100.0, "0.8"],
+		[5.0 / 100.0, "0.1"], [4.0 / 100.0, "0.0"], [996.0 / 100.0, "10.0"], [994.0 / 100.0, "9.9"],
+		[1.0, "1"], [127.0 / 10.0, "12"], [12345678.0 / 10.0, "1,234,567"],
+		[1.0 / 10.0 + 2.0 / 10.0, "0.3"], [115.0 / 100.0, "1.1"], [235.0 / 100.0, "2.4"], [-1.0, "0"]]
 	for entry: Array in cases:
 		var shown: String = Hud.format_quantity(entry[0])
-		_check(shown == entry[1], "fmt(%s) = %s (got %s)" % [entry[0], entry[1], shown])
+		_check(shown == entry[1], "fmt(%s) = %s (got %s)" % [var_to_str(entry[0]), entry[1], shown])
 
 
 func _labels(node: Node, into: Array[String]) -> Array[String]:
@@ -233,6 +236,37 @@ func _fractional_stock_is_shown() -> void:
 	await process_frame
 
 
+## The first place two JSON values differ ("" when equal), for the failure message.
+func _diff(a: Variant, b: Variant, path := "$") -> String:
+	if (a is int or a is float) and (b is int or b is float):
+		return "" if float(a) == float(b) else "%s: %s != %s" % [path, var_to_str(float(a)), var_to_str(float(b))]
+	if a is Dictionary and b is Dictionary:
+		for key in a:
+			if not b.has(key):
+				return "%s.%s missing" % [path, key]
+			var inner := _diff(a[key], b[key], "%s.%s" % [path, key])
+			if not inner.is_empty():
+				return inner
+		for key in b:
+			if not a.has(key):
+				return "%s.%s added" % [path, key]
+		return ""
+	if a is Array and b is Array:
+		if a.size() != b.size():
+			return "%s: %d items != %d" % [path, a.size(), b.size()]
+		for index in a.size():
+			var inner := _diff(a[index], b[index], "%s[%d]" % [path, index])
+			if not inner.is_empty():
+				return inner
+		return ""
+	return "" if typeof(a) == typeof(b) and a == b else "%s: %s != %s" % [path, var_to_str(a), var_to_str(b)]
+
+
+func _kept(value: Variant, original: Dictionary, what: String) -> void:
+	var difference := _diff(value, original)
+	_check(difference.is_empty(), "%s (%s)" % [what, difference])
+
+
 ## Numbers compare by value: JSON reads every number back as a float.
 func _same(a: Variant, b: Variant) -> bool:
 	if (a is int or a is float) and (b is int or b is float):
@@ -263,32 +297,38 @@ func _legacy_save_is_kept() -> void:
 	# Import on a desktop build writes the save file at once.
 	var game := _game(true)
 	_check(game.import_save(text), "the JS save imports")
-	_check(_same(game.state.legacy_web_save, original), "legacy_web_save equals the JS save after import")
-	_check(_same(Save.load_game().get("legacy_web_save"), original), "legacy_web_save equals the JS save in the written file")
+	_kept(game.state.legacy_web_save, original, "legacy_web_save equals the JS save after import")
+	_kept(Save.load_game().get("legacy_web_save"), original, "legacy_web_save equals the JS save in the written file")
 	# Play, autosave, and play again: the original payload is data, never rewritten by the game.
 	game.mine("iron")
 	game.state.gold = float(game.state.gold) + 5.0
 	_ticks(game, 50)
 	game._mark_dirty()
 	game.flush(true)
-	_check(_same(Save.load_game().get("legacy_web_save"), original), "legacy_web_save is unchanged after an autosave")
+	_kept(Save.load_game().get("legacy_web_save"), original, "legacy_web_save is unchanged after an autosave")
 	game.queue_free()
 	# A new session loads the file.
 	var reloaded := _game(true)
-	_check(_same(reloaded.state.legacy_web_save, original), "legacy_web_save is unchanged after a reload")
+	_kept(reloaded.state.legacy_web_save, original, "legacy_web_save is unchanged after a reload")
 	_check(float(reloaded.state.inventory.get("iron", 0.0)) >= 1.5, "the reload kept the played progress")
 	# Export and import the Godot save again.
 	var exported: String = reloaded.export_save()
-	_check(_same(Save.parse_game(exported).get("legacy_web_save"), original), "legacy_web_save is unchanged in an exported save")
-	_check(reloaded.import_save(exported) and _same(reloaded.state.legacy_web_save, original), "legacy_web_save is unchanged after re-importing the export")
+	_kept(Save.parse_game(exported).get("legacy_web_save"), original, "legacy_web_save is unchanged in an exported save")
+	_check(reloaded.import_save(exported), "the export imports again")
+	_kept(reloaded.state.legacy_web_save, original, "legacy_web_save is unchanged after re-importing the export")
 	reloaded.queue_free()
 	var again := _game(true)
-	_check(_same(again.state.legacy_web_save, original), "legacy_web_save is unchanged after a second reload")
+	_kept(again.state.legacy_web_save, original, "legacy_web_save is unchanged after a second reload")
 	again.queue_free()
-	# An S2 auto-save row (envelope around the same payload) keeps the same game payload.
-	var row := {"id": "11111111-2222-4333-8444-555555555555", "revision": 3, "snapshot": {"format": 1,
-		"id": "66666666-7777-4888-9999-000000000000", "villageId": "11111111-2222-4333-8444-555555555555",
-		"name": "시험 마을", "savedAt": original.savedAt, "payload": original}}
+	# An S2 auto-save row around the same JSON text (the payload is not re-serialized by Godot here).
+	var row := '{"id":"11111111-2222-4333-8444-555555555555","revision":3,"snapshot":{"format":1,' \
+		+ '"id":"66666666-7777-4888-9999-000000000000","villageId":"11111111-2222-4333-8444-555555555555",' \
+		+ '"name":"시험 마을","savedAt":%s,"payload":%s}}' % [JSON.stringify(original.savedAt), text]
 	var s2 := _game()
-	_check(s2.import_save(JSON.stringify(row)) and _same(s2.state.legacy_web_save, original), "an S2 row keeps the game payload")
+	_check(s2.import_save(row), "an S2 row imports")
+	_kept(s2.state.legacy_web_save, original, "an S2 row keeps the game payload")
 	s2.queue_free()
+	# Number round trip used by every Godot save: the stored text must read back as the same double.
+	for number: float in [1.0 / 10.0 + 2.0 / 10.0, 142875.0 / 1000.0, 1792000000000.0, 115.0 / 100.0, 1.0 / 3.0]:
+		var back: Variant = JSON.parse_string(JSON.stringify([number], "", true, true))[0]
+		_check(float(back) == number, "JSON number round trip %s → %s" % [var_to_str(number), var_to_str(back)])
