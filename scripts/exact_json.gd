@@ -71,7 +71,7 @@ static func number_text(x: float) -> String:
 static func shortest_digits(x: float) -> Array:
 	var exact := _exact_decimal(x)
 	# Below the smallest normal double precision is lower, so fewer than 15 digits can be the shortest.
-	var precisions := range(1, 18) if x < _from_bits(0x0010000000000000) else [15, 16, 17]
+	var precisions: Array = range(1, 18) if x < _from_bits(0x0010000000000000) else [15, 16, 17]
 	for precision: int in precisions:
 		var rounded := _round_digits(exact[0], precision)
 		var digits: String = rounded[0]
