@@ -120,7 +120,7 @@ func _auto_sell() -> void:
 	_check(game.buy_auto_sell("steel"), "auto-sell can be bought for a normal recipe")
 	game.state.inventory["steel"] = 7.0
 	var gold := float(game.state.gold)
-	var expected := 7.0 * float(steel.sell) * game._multiplier()
+	var expected: float = 7.0 * float(steel.sell) * float(game._multiplier())
 	game._tick()
 	_check(is_zero_approx(float(game.state.inventory.steel)), "auto-sell empties the steel stock (left %s)" % game.state.inventory.steel)
 	_check(is_equal_approx(float(game.state.gold), gold + expected), "auto-sell pays qty × price × multiplier (%s → %s, expected +%s)" % [gold, game.state.gold, expected])
@@ -190,9 +190,9 @@ func _quantity_format() -> void:
 	var cases := [[0.0, "0"], [0.5, "0.5"], [0.25, "0.3"], [0.75, "0.8"], [0.05, "0.1"], [0.04, "0.0"],
 		[9.96, "10.0"], [9.94, "9.9"], [1.0, "1"], [12.7, "12"], [1234567.8, "1,234,567"],
 		[0.30000000000000004, "0.3"], [1.15, "1.1"], [2.35, "2.4"], [-1.0, "0"]]
-	for case: Array in cases:
-		var shown: String = Hud.format_quantity(case[0])
-		_check(shown == case[1], "fmt(%s) = %s (got %s)" % [case[0], case[1], shown])
+	for entry: Array in cases:
+		var shown: String = Hud.format_quantity(entry[0])
+		_check(shown == entry[1], "fmt(%s) = %s (got %s)" % [entry[0], entry[1], shown])
 
 
 func _labels(node: Node, into: Array[String]) -> Array[String]:
