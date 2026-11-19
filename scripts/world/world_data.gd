@@ -7,9 +7,15 @@ extends RefCounted
 const CATALOG_PATH := "res://data/web_catalog.json"
 const META_KEY := "mining_world_catalog"
 
+## Read once, then kept: the terrain and village layout ask for it thousands of times per layout.
+static var _catalog: Dictionary = {}
+
 static func catalog() -> Dictionary:
+	if not _catalog.is_empty():
+		return _catalog
 	if Engine.has_meta(META_KEY):
-		return Engine.get_meta(META_KEY)
+		_catalog = Engine.get_meta(META_KEY)
+		return _catalog
 	var text := FileAccess.get_file_as_string(CATALOG_PATH)
 	var parsed: Variant = JSON.parse_string(text)
 	var data: Dictionary = parsed if parsed is Dictionary else {}
@@ -22,6 +28,7 @@ static func catalog() -> Dictionary:
 	for p: String in source.get("negative_infinity_encoded_as_null", []):
 		_set_path(data, p, -INF)
 	Engine.set_meta(META_KEY, data)
+	_catalog = data
 	return data
 
 static func _set_path(root: Variant, dotted: String, value: float) -> void:

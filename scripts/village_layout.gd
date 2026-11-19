@@ -165,28 +165,61 @@ static func can_stand(index: Index, tunnel_open: bool, x: float, y: float) -> bo
 	return not index.blocks(x, y)
 
 
+## The grid cells (j * nx + i, point (x0 + i * st, y0 + j * st)) where the player's foot box touches box `o`:
+## exactly the cells foot_overlaps(o, x, y) is true for, found by testing only the cells round the box.
+## With `bucket` (the box's Index cell), only points whose own cell is within 2 of it, as Index.blocks looks.
+static func _cover(o: Dictionary, x0: float, y0: float, st: float, nx: int, ny: int, hw: float, hh: float,
+		bucket := Vector2i(-2147483647, 0)) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	var i0 := maxi(0, int(floor((float(o.minX) - hw - x0) / st)) - 1)
+	var i1 := mini(nx - 1, int(ceil((float(o.maxX) + hw - x0) / st)) + 1)
+	var j0 := maxi(0, int(floor((float(o.minY) - hh - y0) / st)) - 1)
+	var j1 := mini(ny - 1, int(ceil((float(o.maxY) + hh - y0) / st)) + 1)
+	var limited := bucket.x != -2147483647
+	for j in range(j0, j1 + 1):
+		var py := y0 + j * st
+		if not (py + hh > o.minY and py - hh < o.maxY):
+			continue
+		if limited and absi(int(floor(py)) - bucket.y) > 2:
+			continue
+		for i in range(i0, i1 + 1):
+			var px := x0 + i * st
+			if px + hw > o.minX and px - hw < o.maxX and (not limited or absi(int(floor(px)) - bucket.x) <= 2):
+				out.append(j * nx + i)
+	return out
+
+
 ## The reach check over a rectangle, flood-filled from `start` (web villageReachArea). Returns a Callable
 ## (boxes: Array, doors: Array) -> bool: with the new walls, every door can still be walked to and nothing that
 ## could be reached before is cut off.
+## Same answer as testing can_stand and foot_overlaps at every grid point; the boxes are laid onto the grid
+## once instead (the web game does the per-point tests, which are slow in GDScript compiled to WebAssembly).
 static func reach_area(index: Index, tunnel_open: bool, x0: float, y0: float, x1: float, y1: float, start: Dictionary) -> Callable:
 	var st: float = V().SITE.GRID
 	var nx := int(_round((x1 - x0) / st)) + 1
 	var ny := int(_round((y1 - y0) / st)) + 1
 	var n := nx * ny
+	var hw: float = index.foot.HALF_W
+	var hh: float = index.foot.HALF_H
 	var can := PackedByteArray()
 	can.resize(n)
 	for j in ny:
+		var py := y0 + j * st
 		for i in nx:
-			can[j * nx + i] = 1 if can_stand(index, tunnel_open, x0 + i * st, y0 + j * st) else 0
+			can[j * nx + i] = 1 if WorldTerrain.is_point_walkable(x0 + i * st, py, tunnel_open) else 0
+	for key: Vector2i in index.buckets:
+		for o: Dictionary in index.buckets[key]:
+			for c: int in _cover(o, x0, y0, st, nx, ny, hw, hh, key):
+				can[c] = 0
 	var cell := func(x: float, y: float) -> int:
 		var i := int(_round((x - x0) / st))
 		var j := int(_round((y - y0) / st))
 		return -1 if i < 0 or j < 0 or i >= nx or j >= ny else j * nx + i
-	var fill := func(blocked: Callable) -> PackedByteArray:
+	var fill := func(blocked: PackedByteArray) -> PackedByteArray:
 		var seen := PackedByteArray()
 		seen.resize(n)
 		var s0: int = cell.call(start.x, start.y)
-		if s0 < 0 or can[s0] == 0 or blocked.call(s0):
+		if s0 < 0 or can[s0] == 0 or blocked[s0] == 1:
 			return seen
 		var q := PackedInt32Array([s0])
 		seen[s0] = 1
@@ -195,27 +228,27 @@ static func reach_area(index: Index, tunnel_open: bool, x0: float, y0: float, x1
 			q.resize(q.size() - 1)
 			var i := c % nx
 			for d: int in [c - 1 if i > 0 else -1, c + 1 if i < nx - 1 else -1, c - nx, c + nx]:
-				if d < 0 or d >= n or seen[d] == 1 or can[d] == 0 or blocked.call(d):
+				if d < 0 or d >= n or seen[d] == 1 or can[d] == 0 or blocked[d] == 1:
 					continue
 				seen[d] = 1
 				q.append(d)
 		return seen
-	var before: PackedByteArray = fill.call(func(_c: int) -> bool: return false)
+	var none := PackedByteArray()
+	none.resize(n)
+	var before: PackedByteArray = fill.call(none)
 	return func(boxes: Array, doors: Array) -> bool:
-		var hit := func(c: int) -> bool:
-			var px := x0 + (c % nx) * st
-			var py := y0 + floorf(float(c) / nx) * st
-			for o: Dictionary in boxes:
-				if foot_overlaps(o, px, py):
-					return true
-			return false
+		var hit := PackedByteArray()
+		hit.resize(n)
+		for o: Dictionary in boxes:
+			for c: int in _cover(o, x0, y0, st, nx, ny, hw, hh):
+				hit[c] = 1
 		var after: PackedByteArray = fill.call(hit)
 		for d: Dictionary in doors:
 			var c: int = cell.call(d.x, d.y)
 			if c < 0 or after[c] == 0:
 				return false
 		for c in n:
-			if before[c] == 1 and after[c] == 0 and not hit.call(c):
+			if before[c] == 1 and after[c] == 0 and hit[c] == 0:
 				return false
 		return true
 
@@ -344,11 +377,9 @@ static func district_parts(d: Dictionary) -> Dictionary:
 	]}
 
 
-static func district_fits(world: RefCounted, village: Dictionary, x: float, y: float, layout: int) -> bool:
-	var D: Dictionary = V().DISTRICT
-	var B := WorldData.world()
+## What district_fits measures against that stays the same while one district is looked for.
+static func _district_context(world: RefCounted) -> Dictionary:
 	var base: Vector2i = world.base
-	var rects: Array = district_parts({"x": x, "y": y, "layout": layout}).rects
 	var veins: Array = []
 	for m: Dictionary in world.mines:
 		veins.append(Vector2(m.x, m.y))
@@ -358,18 +389,23 @@ static func district_fits(world: RefCounted, village: Dictionary, x: float, y: f
 	var tunnel_road: Array = []
 	for k in 41:
 		tunnel_road.append(Vector2(base.x + (t.mouth_x - base.x) * k / 40.0, base.y + (t.y - base.y) * k / 40.0))
+	return {"veins": veins, "tunnel_road": tunnel_road}
+
+
+## Does the district fit at (x, y) with this layout (web villageDistrictFits)? Every rule must hold, so the
+## cheap distance rules are checked before walking each footprint on its 0.25 grid; the answer is the same.
+static func district_fits(world: RefCounted, village: Dictionary, x: float, y: float, layout: int, context := {}) -> bool:
+	var D: Dictionary = V().DISTRICT
+	var B := WorldData.world()
+	var base: Vector2i = world.base
+	var rects: Array = district_parts({"x": x, "y": y, "layout": layout}).rects
+	var ctx: Dictionary = context if not context.is_empty() else _district_context(world)
+	var veins: Array = ctx.veins
+	var tunnel_road: Array = ctx.tunnel_road
 	var sites: Dictionary = village.get("sites", {})
 	for r: Dictionary in rects:
 		if r.minX < B.BOUNDS_MIN_X + D.EDGE or r.maxX > B.BOUNDS_MAX_X - D.EDGE or r.minY < B.BOUNDS_MIN_Y + D.EDGE or r.maxY > B.BOUNDS_MAX_Y - D.EDGE:
 			return false
-		var px: float = r.minX
-		while px <= r.maxX + 1e-9:
-			var py: float = r.minY
-			while py <= r.maxY + 1e-9:
-				if WorldTerrain.region_at(px, py) != "open" or not WorldTerrain.is_point_walkable(px, py, world.tunnel_unlocked):
-					return false
-				py += 0.25
-			px += 0.25
 		if rect_dist(r, base.x, base.y) < D.BASE_CLEAR:
 			return false
 		for v: Vector2 in veins:
@@ -388,6 +424,15 @@ static func district_fits(world: RefCounted, village: Dictionary, x: float, y: f
 		for tc: Dictionary in world.torches:
 			if rect_dist(r, tc.x, tc.y) < D.TORCH_CLEAR:
 				return false
+	for r: Dictionary in rects:
+		var px: float = r.minX
+		while px <= r.maxX + 1e-9:
+			var py: float = r.minY
+			while py <= r.maxY + 1e-9:
+				if WorldTerrain.region_at(px, py) != "open" or not WorldTerrain.is_point_walkable(px, py, world.tunnel_unlocked):
+					return false
+				py += 0.25
+			px += 0.25
 	return true
 
 
@@ -401,6 +446,7 @@ static func ensure_district(world: RefCounted, village: Dictionary) -> bool:
 	var D: Dictionary = V().DISTRICT
 	var base: Vector2i = world.base
 	var reach := Callable()
+	var context := _district_context(world)
 	var rings: Array = [D.DIST[1], D.DIST_WIDE]
 	for ri in rings.size():
 		var rmin: float = D.DIST[0] if ri == 0 else D.DIST[1]
@@ -414,7 +460,7 @@ static func ensure_district(world: RefCounted, village: Dictionary) -> bool:
 			return p.a < q.a)
 		for c: Dictionary in cands:
 			for layout in D.LAYOUTS.size():
-				if not district_fits(world, village, c.x, c.y, layout):
+				if not district_fits(world, village, c.x, c.y, layout, context):
 					continue
 				if not reach.is_valid():
 					reach = _reach_grid(world, Index.new(obstacles(world, village)), float(D.REACH))
