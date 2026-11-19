@@ -40,7 +40,7 @@ Godot PR #1 `f14d45d` + 1차 수정 브랜치 `claude/feature-parity-p0`.
 | `run.hqLevel` · `craftFacility` · `facility` · `workforce` | 예 | 예 | 같은 이름의 Godot 키 |
 | `run.lastPull` · `run.autoLineLogged` | 예 | 아니요 | 화면 표시용 기록. 게임 진행에 영향 없음 |
 | `run.world.base` · `mines` · `hiddenMineIds` · `tunnelUnlocked` | 예 | 예 | `world` (`WorldState.from_dict`) |
-| `run.world.workshops[]` (`id, x, y, level, recipeKey, auto, progress`) | 예 | **아니요** | 제작소 건물 미이식. 제작소 단계에서 복원 |
+| `run.world.workshops[]` (`id, x, y, level, recipeKey, auto, progress`) | 예 | 예 | `world.workshops` (같은 모양, `sanitizeWorkshops` 규칙). 제작소 이전 Godot 저장(`world`에 `workshops` 없음)은 원본에서 다시 복원. Godot 저장에 목록이 있으면 그것이 우선. 제작소·자동 제작이 쓰이고 있으면 해당 연구 완료로 봄(`researchSyncFromState`) |
 | `run.world.torches[]` (`x, y`) | 예 | **아니요** | 횃불 미이식 |
 | `run.world.player` (`x, y, facing`) | 예 | **아니요** | 가져오면 공방 앞에서 시작. JS 격자 좌표와 Godot 픽셀 좌표 변환 규칙 미정 |
 | `run.world.tunnelContract` (`startedAt, durationSec`) | 예 | **아니요** | 진행 중 터널 공사가 이어지지 않음. `tunnelUnlocked: true`면 개통 상태는 복원됨 |
@@ -87,4 +87,4 @@ JS 저장 파일을 `파일에서 가져오기`로 다시 가져와야 한다. 1
    `sanitizePlayer`)을 그대로 이식하고, 잘못된 항목만 버린다.
 4. `tunnelContract.startedAt`은 벽시계(ms) 기준이다. 복원 시 남은 시간을 `durationSec - (지금 - startedAt)/1000`로 계산할지,
    가져온 시점부터 다시 셀지 정해야 한다 — 결정 필요.
-5. 제작소 전용 레시피(workshopOnly) 제작 제한은 제작소 건물 복원과 함께 켠다. 이번 단계에서는 꺼 둔다.
+5. 제작소 전용 레시피(workshopOnly) 제작 제한은 제작소 건물 복원과 함께 켠다. → 제작소 단계에서 켰다(`WORKSHOP_ONLY_IN_HUTS`). 레시피 카드에서 이미 돌던 제작은 끝까지 진행된다.

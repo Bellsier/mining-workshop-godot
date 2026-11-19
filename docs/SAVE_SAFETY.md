@@ -43,10 +43,13 @@ Godot `user://workshop_save.json`(첫 웹 빌드)도 읽기만 하며 지우지 
 
 게임 진행이 바뀌면 2초 안에 저장합니다. 걷기만 했다면 15초에 한 번 저장합니다. 페이지가 숨겨지거나 닫힐 때(`visibilitychange`, `pagehide`)와 창이 포커스를 잃을 때는 즉시 저장을 시작합니다. 페이지가 이미 닫히는 중이면 브라우저가 트랜잭션을 끝내지 못할 수 있고, 이때는 마지막 저장이 그대로 남습니다.
 
+자동 저장은 이 게임이 마지막으로 쓰거나 정상으로 읽은 파일(SHA-256 일치)이면 다시 파싱하지 않고 덮어씁니다. 그 밖의 파일은 지금처럼 먼저 읽어 보고, 손상·미래 버전이면 쓰지 않습니다. 가져오기는 저장 텍스트를 한 번만 파싱합니다.
+
 ## 테스트
 
 | 테스트 | 실행 | 범위 |
 |---|---|---|
 | `tests/web-save/store-unit.cjs` | `SAVE_QA_BROWSERS=chromium,firefox,webkit node store-unit.cjs` | JS 저장 모듈: CAS, 두 탭 경쟁, 키 이전과 실패, 보호 저장, quota(크롬은 실제 한도), 시간 초과, 차단, 잠금 |
 | `tests/web-save/run.cjs` | `SAVE_QA_BROWSER=<엔진> SAVE_QA_WEB=<웹 빌드> node run.cjs` | 실제 Godot 웹 빌드 E2E |
+| `tools/save_performance_test.gd` | `MINING_QA_ISOLATED=1 XDG_DATA_HOME=<빈 폴더> godot --headless --path . --script res://tools/save_performance_test.gd` | 대용량(약 0.4·1.6MB JS 저장 + 제작소 8곳) 가져오기·자동 저장·불러오기 시간 예산과 4배 데이터 증가율, 손실 없음, 빠른 경로의 안전성 |
 | `tools/save_recovery_test.gd` | `MINING_QA_ISOLATED=1 XDG_DATA_HOME=<빈 폴더> godot --headless --path . --script res://tools/save_recovery_test.gd` | 데스크톱 보호·보관·재시도·저장 빈도 |

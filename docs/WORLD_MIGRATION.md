@@ -75,7 +75,7 @@ CI: `.github/workflows/world-qa.yml` (claude/** 푸시). 기존 `--route-test`(R
 | 항목 | 원본 | 상태 |
 |---|---|---|
 | 마을 바닥(광장·길·정원)과 마을 시설 벽 | `village.js`, tdTileAt `village` | 미이관. `tile_at`은 마을 없이 공방 마당·터널 길만 그림 |
-| 공방 증축(제작소 오두막) 위치와 벽 | `state.world.workshops` | 미이관(경제 쪽과 함께) |
+| 공방 증축(제작소 오두막) 위치와 벽 | `state.world.workshops` | 데이터·경제 이관(`scripts/craft_huts.gd`). 월드 지도에 그리기와 벽 충돌은 미이관 |
 | 횃불·조명 | `state.world.torches`, `topdown/light.js` | 미이관 |
 | 일꾼 길찾기(A*)·광맥까지 걷기 | `worldnavigation.js`, `topdown/workers.js` | 미이관 |
 | 탐색 지도(미니맵) | `topdown/render.js` 미니맵 | 미이관. 지역 이름·발견 수 표시만 |
