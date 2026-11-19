@@ -528,6 +528,15 @@ func _restore(source: Dictionary) -> void:
 	state.tunnel_open = world.tunnel_unlocked
 	world.discovered.connect(func(_mine): _mark_dirty())
 	world.tunnel_opened.connect(func(_added): _mark_dirty())
+	# A web save's player stands where it was (web sanitizePlayer: inside the world, on walkable ground; else the
+	# base). 1 world unit is 64 px on the Godot map.
+	if state.position.is_empty() and not legacy_world.is_empty() and not source.has("world"):
+		var p := _dictionary(legacy_world.get("player"))
+		var px: Variant = p.get("x")
+		var py: Variant = p.get("y")
+		if (px is float or px is int) and (py is float or py is int) and is_finite(float(px)) and is_finite(float(py)) \
+				and WorldTerrainScript.is_point_walkable(float(px), float(py), world.tunnel_unlocked):
+			state.position = {"scene": "res://scenes/world/world_map.tscn", "x": float(px) * 64.0, "y": float(py) * 64.0}
 	# Trial-scene pixels are not coordinates on the unified world map.
 	if str(state.position.get("scene", "")) in ["res://scenes/overworld.tscn", "res://scenes/tunnel.tscn"]:
 		state.position = {}
@@ -1128,6 +1137,11 @@ func _research_cost(row: Dictionary) -> Dictionary:
 	return cost
 
 func restore_facility(id: String) -> bool:
+	# web villageRestoreBlocker: a facility needs its site first (laid out now if it was not yet).
+	if not state.village.sites.get(id) is Dictionary:
+		_ensure_village()
+		if not state.village.sites.get(id) is Dictionary:
+			return _reject("자리를 찾는 중이에요.")
 	var step := Village.next_stage(data, state.village, id)
 	if step.is_empty():
 		return _reject("선행 복구가 필요하거나 이미 운영 중이에요.")
@@ -1152,6 +1166,251 @@ func donate_relic(id: String) -> bool:
 			village.donated.append(id)
 			return _updated("박물관 기증 · " + relic.name)
 	return false
+
+## Donates every relic the museum does not show yet (web villageDonateAll). Returns how many.
+func donate_all_relics(_id := "") -> int:
+	var count := 0
+	for relic: Dictionary in data.village_relics:
+		var village: Dictionary = state.village
+		if Village.is_open(data, village, "museum") and relic.key not in village.donated and int(village.owned.get(relic.key, 0)) > 0:
+			if donate_relic(relic.key):
+				count += 1
+	return count
+
+# --- the village in the world (web villageTargetFor, garden, house) -------------------------------------------
+
+## What walking up to a facility's door offers (web villageTargetFor): {action, label}.
+func village_target(key: String) -> Dictionary:
+	var facility: Dictionary = data.village.FACILITIES[key]
+	var name: String = facility.name
+	var village: Dictionary = state.village
+	if not Village.is_open(data, village, key):
+		var needs: Variant = facility.get("requires")
+		if needs is String and not Village.is_open(data, village, needs):
+			return {"action": "locked", "label": "%s · %s 먼저 복구" % [name, data.village.FACILITIES[needs].name]}
+		var step := Village.next_stage(data, village, key)
+		return {"action": "restore", "label": "%s %s · %s" % [name, step.name, _cost_label(step.cost)]}
+	if key == "appraiser":
+		var n := int(village.unidentified)
+		return {"action": "appraise", "label": "%s · 유물 감정 (미감정 %d)" % [name, n]} if n > 0 else {"action": "open", "label": name + " · 감정할 유물 없음"}
+	if key == "museum":
+		var donatable := 0
+		for relic: Dictionary in data.village_relics:
+			if relic.key not in village.donated and int(village.owned.get(relic.key, 0)) > 0:
+				donatable += 1
+		if donatable > 0:
+			return {"action": "donate", "label": "%s · 유물 기증 (%d점)" % [name, donatable]}
+		return {"action": "open", "label": "%s · 전시 %d/%d · 광물·보석 %d/%d" % [name, village.donated.size(), data.village_relics.size(),
+			Village.specimen_keys(village).size(), data.village_specimens.size()]}
+	return {"action": "open", "label": name}
+
+func _cost_label(cost: Dictionary) -> String:
+	var parts := PackedStringArray(["%sG" % Hud.format_quantity(float(cost.get("gold", 0)))])
+	var products: Dictionary = cost.get("products", {})
+	for k: String in products:
+		parts.append("%s %d개" % [_label(k), int(products[k])])
+	return " + ".join(parts)
+
+## Garden UI state, not saved (web VILLAGE_GARDEN_UI): the kind to set down and the cell being carried.
+var garden_ui := {"selected": "flowerPot", "carry": -1}
+
+func decor_unlocked(kind: String) -> bool:
+	var d := VillageLayout.decor_def(kind)
+	if d.is_empty():
+		return false
+	if not d.get("reward", false):
+		return true
+	var collected := int(state.village.donated.size()) + Village.specimen_keys(state.village).size()
+	for r: Dictionary in data.village_museum_rewards:
+		if r.get("decor") == kind and collected >= int(r.need):
+			return true
+	return false
+
+func decor_selected() -> String:
+	if not decor_unlocked(str(garden_ui.selected)):
+		garden_ui.selected = data.village.DECOR[0].key
+	return garden_ui.selected
+
+## The next unlocked decoration kind (web villageDecorCycle, Q).
+func decor_cycle(_id := "") -> String:
+	var keys: Array = []
+	for d: Dictionary in data.village.DECOR:
+		if decor_unlocked(d.key):
+			keys.append(d.key)
+	garden_ui.selected = keys[(keys.find(decor_selected()) + 1) % keys.size()]
+	changed.emit()
+	return garden_ui.selected
+
+func decor_select(kind: String) -> bool:
+	if not decor_unlocked(kind):
+		return false
+	garden_ui.selected = kind
+	changed.emit()
+	return true
+
+func _decor_index(cell: int) -> int:
+	var list: Array = state.village.decor
+	for i in list.size():
+		if int(list[i].cell) == cell:
+			return i
+	return -1
+
+## Why a decoration of `kind` cannot stand on `cell` (web villageDecorPlaceProblem), or "". `from` is the cell it
+## is moved from; `player` the player's feet (world units); `quick` skips the reach check.
+func decor_problem(kind: String, cell: int, from := -1, player := Vector2(INF, INF), quick := false) -> String:
+	var G: Dictionary = data.village.GARDEN
+	var village: Dictionary = state.village
+	var cells := VillageLayout.garden_cells(village)
+	if cells.is_empty():
+		return "정원 자리가 아직 없어요"
+	if VillageLayout.decor_def(kind).is_empty():
+		return "알 수 없는 장식"
+	if not decor_unlocked(kind):
+		return "아직 해금되지 않은 장식이에요"
+	if cell < 0 or cell >= cells.size():
+		return "정원 칸이 아니에요"
+	if _decor_index(cell) >= 0 and cell != from:
+		return "이미 장식이 있어요"
+	var box := VillageLayout.decor_box(village, kind, cell)
+	var here: Dictionary = cells[cell]
+	if is_finite(player.x) and VillageLayout.foot_overlaps(box, player.x, player.y):
+		return "서 있는 자리에는 놓을 수 없어요"
+	var parts := VillageLayout.district_parts(village.district)
+	var doors: Array = [{"x": float(world.base.x), "y": float(world.base.y)}, parts.house]
+	for k: String in VillageLayout.ORDER:
+		if village.sites.get(k) is Dictionary:
+			doors.append(village.sites[k])
+	for d: Dictionary in doors:
+		if Vector2(d.x, d.y).distance_to(Vector2(here.x, here.y)) < G.DOOR_CLEAR:
+			return "문 앞은 비워 둘게요"
+	for road: Dictionary in village_roads():
+		if VillageLayout.seg_poly_dist(road.points, here.x, here.y) < data.village.DISTRICT.ROAD_HALF + G.ROAD_CLEAR:
+			return "길은 비워 둘게요"
+	for t: Dictionary in world.torches:
+		if VillageLayout.rect_dist(box, t.x, t.y) < 0.12:
+			return "횃불이 있는 칸이에요"
+	if quick:
+		return ""
+	var g: Dictionary = parts.garden
+	var pz: Dictionary = parts.plaza
+	var h: Dictionary = parts.house
+	var m := 1.2
+	var index := VillageLayout.Index.new(VillageLayout.obstacles(world, village, int(garden_ui.carry)))
+	var reach := VillageLayout.reach_area(index, world.tunnel_unlocked,
+		minf(minf(g.x - g.hw, pz.x - pz.r), h.x - 0.5) - m, minf(minf(g.y - g.hh, pz.y - pz.r), h.y - 0.5) - m,
+		maxf(maxf(g.x + g.hw, pz.x + pz.r), h.x + 0.5) + m, maxf(maxf(g.y + g.hh, pz.y + pz.r), h.y + 0.5) + m, {"x": pz.x, "y": pz.y})
+	if not reach.call([box], [{"x": h.x, "y": h.y + 0.1}]):
+		return "길이 막히는 자리예요"
+	return ""
+
+func decor_place(kind: String, cell: int, player := Vector2(INF, INF)) -> bool:
+	var why := decor_problem(kind, cell, -1, player)
+	if not why.is_empty():
+		return _reject(why)
+	state.village.decor.append({"kind": kind, "cell": cell})
+	return _updated(VillageLayout.decor_def(kind).name + " 놓기!")
+
+func decor_move(from: int, to: int, player := Vector2(INF, INF)) -> bool:
+	var i := _decor_index(from)
+	if i < 0:
+		return _reject("들고 있는 장식이 없어요")
+	if from == to:
+		return true
+	var list: Array = state.village.decor
+	var kind := str(list[i].kind)
+	list.remove_at(i)
+	var why := decor_problem(kind, to, from, player)
+	list.insert(i, {"kind": kind, "cell": from if not why.is_empty() else to})
+	if not why.is_empty():
+		return _reject(why)
+	return _updated("옮겼어요")
+
+func decor_remove(cell: int) -> String:
+	var i := _decor_index(cell)
+	if i < 0:
+		return ""
+	var kind := str(state.village.decor[i].kind)
+	state.village.decor.remove_at(i)
+	if int(garden_ui.carry) == cell:
+		garden_ui.carry = -1
+	_updated(VillageLayout.decor_def(kind).name + " 회수")
+	return kind
+
+var _roads_key := ""
+var _roads: Array = []
+
+## The village roads now, worked out again only when what they depend on changed (web villageRoads cache).
+func village_roads() -> Array:
+	var huts := PackedStringArray()
+	for w: Dictionary in world.workshops:
+		huts.append("%d,%d" % [int(w.x), int(w.y)])
+	var key := "%s|%s|%d|%s|%s" % [JSON.stringify(state.village.get("district")), JSON.stringify(state.village.get("sites")),
+		world.mines.size(), ";".join(huts), world.tunnel_unlocked]
+	if key != _roads_key:
+		_roads_key = key
+		_roads = VillageLayout.roads(world, state.village)
+	return _roads
+
+# --- torches (web player.js torchAct) --------------------------------------------------------------------------
+
+## Picks up the torch at hand or sets one down in front of the player. `feet` in world units, `facing` up/down/
+## left/right. Returns {ok, text}.
+func torch_act(feet: Vector2, facing: String) -> Dictionary:
+	var T: Dictionary = data.torch
+	var v: Vector2 = {"up": Vector2(0, -1), "down": Vector2(0, 1), "left": Vector2(-1, 0), "right": Vector2(1, 0)}.get(facing, Vector2(0, 1))
+	var spot := Vector2(VillageLayout._round((feet.x + v.x * T.AHEAD) * 100.0) / 100.0, VillageLayout._round((feet.y + v.y * T.AHEAD) * 100.0) / 100.0)
+	var near := _nearest_torch(spot, float(T.PICK_AHEAD))
+	if near < 0:
+		near = _nearest_torch(feet, float(T.PICK_UNDER))
+	if near >= 0:
+		world.torches.remove_at(near)
+		_village_try_key = ""
+		_record_world()
+		_updated("횃불을 거뒀어요")
+		return {"ok": true, "text": "횃불을 거뒀어요"}
+	var why := torch_problem(spot)
+	if not why.is_empty():
+		feedback.emit(why)
+		return {"ok": false, "text": why}
+	world.torches.append({"x": spot.x, "y": spot.y})
+	_record_world()
+	_updated("횃불을 놓았어요")
+	return {"ok": true, "text": "횃불을 놓았어요"}
+
+func _nearest_torch(at: Vector2, reach: float) -> int:
+	var best := -1
+	var best_d := reach
+	for i in world.torches.size():
+		var d := at.distance_to(Vector2(world.torches[i].x, world.torches[i].y))
+		if d <= best_d:
+			best = i
+			best_d = d
+	return best
+
+## Why a torch cannot go at `at` (web torchPlaceProblem), or "".
+func torch_problem(at: Vector2) -> String:
+	var T: Dictionary = data.torch
+	if world.torches.size() >= int(T.MAX):
+		return "횃불은 %d개까지 놓을 수 있어요" % int(T.MAX)
+	if not WorldTerrainScript.is_point_walkable(at.x, at.y, world.tunnel_unlocked):
+		return "여기에는 놓을 수 없어요"
+	for m: Dictionary in world.mines:
+		if Vector2(m.x, m.y).distance_to(at) < T.MINE_CLEAR:
+			return "광맥과 너무 가까워요"
+	var doors: Array = [Vector2(world.base)]
+	for w: Dictionary in world.workshops:
+		doors.append(Vector2(w.x, w.y))
+	for d: Vector2 in doors:
+		if d.distance_to(at) < T.DOOR_CLEAR:
+			return "문 앞은 비워 둘게요"
+	var r: float = T.ROOM
+	for o: Dictionary in VillageLayout.obstacles(world, state.village, int(garden_ui.carry)):
+		if at.x > o.minX - r and at.x < o.maxX + r and at.y > o.minY - r and at.y < o.maxY + r:
+			return "건물이나 바위에 너무 가까워요"
+	for t: Dictionary in world.torches:
+		if Vector2(t.x, t.y).distance_to(at) < T.GAP:
+			return "횃불끼리 너무 가까워요"
+	return ""
 
 func donate_specimen(id: String) -> bool:
 	var village: Dictionary = state.village
@@ -1661,8 +1920,13 @@ func _valid_worker(worker: Variant) -> bool:
 func _dictionary(value: Variant) -> Dictionary:
 	return value.duplicate(true) if value is Dictionary else {}
 
+## Scenes whose positions are not saved: inside the house the saved position stays on its door step (web).
+const UNSAVED_POSITION_SCENES := ["res://scenes/world/house.tscn"]
+
 func _record_position() -> void:
 	if not is_instance_valid(player) or get_tree().current_scene == null:
+		return
+	if get_tree().current_scene.scene_file_path in UNSAVED_POSITION_SCENES:
 		return
 	var value := {"scene": get_tree().current_scene.scene_file_path, "x": player.position.x, "y": player.position.y}
 	if state.position != value:

@@ -91,6 +91,18 @@ func open_workshop() -> void:
 func open_inventory() -> void:
 	_open(true)
 
+## Opens the workshop menu on a tab by name: "craft" (huts and recipes), "village", "mining", ...
+func open_tab(tab: String) -> void:
+	var index: int = {"mining": TAB_MINING, "craft": TAB_CRAFT, "sell": TAB_SELL, "workers": TAB_WORKERS,
+		"research": TAB_RESEARCH, "delivery": TAB_DELIVERY, "village": TAB_VILLAGE, "save": TAB_SAVE}.get(tab, TAB_INVENTORY)
+	open_workshop()
+	if not is_workshop_open():
+		return
+	_active_tab = index
+	_tab_buttons[index].set_pressed_no_signal(true)
+	_scroll.scroll_vertical = 0
+	_refresh(true)
+
 func toggle_workshop() -> void:
 	if is_workshop_open():
 		close_workshop()

@@ -1,7 +1,8 @@
 extends CharacterBody2D
 ## Four-direction walk. Keyboard (WASD / arrows) and the touch stick both feed the move_* input actions.
 
-@export var speed := 72.0
+## web BALANCE.world.PLAYER_SPEED: 3 world units (64 px each) per second.
+@export var speed := 192.0
 var facing := "down"
 @onready var sprite: AnimatedSprite2D = $Sprite
 

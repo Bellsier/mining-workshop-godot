@@ -129,7 +129,8 @@ async function prepare(page, origin) {
   const state = initial.state;
   state.position = { scene: 'res://scenes/world/world_map.tscn', x: 228, y: 0 };
   state.world.mines = [
-    { id: 'mine_start_iron', resource: 'iron', x: 4, y: 0, grade: 1, miningPower: 1, developmentState: 'unsecured' },
+    // Secured, so E mines it (+1 iron per press); an unsecured vein is secured by its first E, as in the web game.
+    { id: 'mine_start_iron', resource: 'iron', x: 4, y: 0, grade: 1, miningPower: 1, developmentState: 'secured' },
   ];
   state.world.hiddenMineIds = [];
   state.inventory = { iron: 1 };

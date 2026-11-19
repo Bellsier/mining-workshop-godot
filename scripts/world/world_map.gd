@@ -13,10 +13,17 @@ const WorldTerrain := preload("res://scripts/world/world_terrain.gd")
 const WorldState := preload("res://scripts/world/world_state.gd")
 const WorldTiles := preload("res://scripts/world/world_tiles.gd")
 const PassageDoor := preload("res://scripts/world/world_passage_door.gd")
+const WorldObjects := preload("res://scripts/world/world_objects.gd")
+const Layout := preload("res://scripts/village_layout.gd")
 const FONT := preload("res://fonts/Galmuri9.ttf")
 
 const UNIT := 64.0
 const REACH := 0.6
+## web TOPDOWN.INTERACT_RANGE: world units from the player to a vein or building to act on it.
+const INTERACT_RANGE := 1.15
+## web TD_DOOR: in front of a door it is picked over a nearer point to the side; behind a building it counts
+## farther; facing it breaks a near tie. Only the order of what is in reach changes, never the reach.
+const DOOR := {"FRONT_DEPTH": 0.9, "FRONT": 0.3, "BEHIND": 0.5, "FACING": 0.15}
 const VEIN_COLORS := {
 	"iron": Color("b6a698"), "coal": Color("707281"), "mana": Color("58c9a6"), "crystal": Color("a9dafb"),
 	"rareMetal": Color("edbd64"), "relic": Color("df8b66"), "cosmicShard": Color("c99aee"), "plasma": Color("ea7ec7"),
@@ -36,6 +43,8 @@ var _toast: Label
 var _toast_left := 0.0
 var _place := ""
 var _near_vein: Dictionary = {}
+var _target: Dictionary = {}
+var objects: Node2D
 
 func _ready() -> void:
 	var game := get_node_or_null("/root/Game")
@@ -57,6 +66,10 @@ func _ready() -> void:
 	_place_spawns()
 	_add_static_box("base", Vector2(state.base), WorldData.obstacle_boxes().get("base", {}))
 	_sync_bodies()
+	objects = WorldObjects.new()
+	objects.name = "Objects"
+	add_child(objects)
+	objects.setup(_economy(), state, player)
 	if state.tunnel_unlocked and entry == "FromTunnel":
 		_add_passage_door() # legacy trial route only; normal play stays on one map
 	_build_ui()
@@ -127,6 +140,14 @@ func _place_spawns() -> void:
 		return
 	var exit := WorldTerrain.tunnel_exit()
 	var at := {"Start": Vector2(state.base), "FromTunnel": exit + Vector2(-0.8, 0)}
+	var economy := _economy()
+	if economy != null and economy.state.village.get("district") is Dictionary:
+		var door: Dictionary = Layout.district_parts(economy.state.village.district).house
+		at["FromHouse"] = Vector2(door.x, door.y + 0.25)
+		if spawns.get_node_or_null("FromHouse") == null:
+			var marker := Marker2D.new()
+			marker.name = "FromHouse"
+			spawns.add_child(marker)
 	for key: String in at:
 		var m := spawns.get_node_or_null(key) as Node2D
 		if m != null:
@@ -186,12 +207,10 @@ func _physics_process(delta: float) -> void:
 	_fill_seeded_near(at)
 	state.explore(at)
 	var place: Dictionary = state.place_at(at)
-	var near: Array = state.veins_near(at, REACH)
-	_near_vein = near[0] if not near.is_empty() else {}
 	var text: String = place.label
 	text += "  ·  광맥 %d/%d" % [state.discovered_count(), state.mines.size()]
-	if not _near_vein.is_empty():
-		text += "\nE  ·  " + action_label(str(_near_vein.id))
+	if not _target.is_empty():
+		text += "\nE  ·  " + str(_target.label)
 	if text != _place:
 		_place = text
 		_region_label.text = text
@@ -200,28 +219,12 @@ func _physics_process(delta: float) -> void:
 		if _toast_left <= 0.0:
 			_toast.text = ""
 
-## E at the vein the player stands at (web interact.js): secures a found vein whose area is open, mines a
-## secured one, or says which area must open first. Goes through the workshop economy.
+## E at the vein the player stands at: secures it, mines it, or says which area must open first.
 func mine_near_vein() -> bool:
-	if _near_vein.is_empty() or get_node("/root/Game").world_input_blocked():
+	if _target.get("type") != "mine":
 		return false
-	var game := get_node_or_null("/root/Game")
-	var economy: Variant = game.get("workshop") if game != null else null
-	if economy == null or not (economy as Object).has_method("mine_vein"):
-		return false
-	var id := str(_near_vein.id)
-	match str(economy.vein_action(id)):
-		"secure":
-			if economy.secure_vein(id):
-				show_toast("확보!")
-				queue_redraw()
-				return true
-			return false
-		"mine":
-			return economy.mine_vein(id)
-		"locked":
-			show_toast(action_label(id))
-	return false
+	interact(context_id(_target))
+	return true
 
 func show_toast(text: String) -> void:
 	_toast.text = text
@@ -322,36 +325,246 @@ func _draw_prop(p: Dictionary) -> void:
 			draw_rect(Rect2(at + Vector2(-13, -16), Vector2(26, 16)), Color8(96, 70, 44))
 			draw_rect(Rect2(at + Vector2(-9, -12), Vector2(18, 12)), Color8(30, 26, 24))
 
-func context_at(point: Vector2) -> String:
-	if to_units(point).distance_to(Vector2(state.base)) <= 0.8:
-		return "workshop"
-	var near: Array = state.veins_near(to_units(point), REACH)
-	_near_vein = near[0] if not near.is_empty() else {}
-	return str(_near_vein.id) if not _near_vein.is_empty() else ""
-
-func action_label(id: String) -> String:
-	if id == "workshop":
-		return "공방 들어가기"
-	var vein: Dictionary = state.mine_by_id(id)
-	if vein.is_empty():
-		return ""
+func _economy() -> Node:
 	var game := get_node_or_null("/root/Game")
 	var economy: Variant = game.get("workshop") if game != null else null
-	var name := WorldData.resource_name(vein.resource)
-	if economy == null or not (economy as Object).has_method("vein_action"):
-		return name + " 채굴"
-	match str(economy.vein_action(id)):
-		"secure":
-			return name + " 광맥 확보"
+	return economy if economy is Node and (economy as Node).has_method("vein_action") else null
+
+
+## The id Game keeps for a target: "workshop" for the cabin, "type:id" for the rest.
+static func context_id(t: Dictionary) -> String:
+	if t.is_empty():
+		return ""
+	return "workshop" if t.type == "base" else "%s:%s" % [t.type, t.id]
+
+
+func context_at(point: Vector2) -> String:
+	var facing := str(player.get("facing")) if is_instance_valid(player) else "down"
+	_target = find_target(to_units(point), facing)
+	var vein: Dictionary = state.mine_by_id(str(_target.id)) if _target.get("type") == "mine" else {}
+	if vein != _near_vein:
+		_near_vein = vein
+		queue_redraw()
+	return context_id(_target)
+
+
+func action_label(id: String) -> String:
+	return str(_target.label) if not _target.is_empty() and id == context_id(_target) else ""
+
+
+## What the player could act on now: the nearest target within reach (web tdInteractTarget):
+## {type: mine | base | workshop | village | house | garden | plaza, id, x, y, action, label}.
+func find_target(at: Vector2, facing: String) -> Dictionary:
+	var economy := _economy()
+	# Lambdas capture locals by value: the best target so far lives in a shared dictionary.
+	var found := {"t": {}, "d": INF}
+	var consider := func(t: Dictionary, d: float, bonus: float) -> void:
+		var score := d - bonus
+		if d <= INTERACT_RANGE and score < found.d:
+			found.t = t
+			found.d = score
+	for m: Dictionary in state.mines:
+		if not state.is_discovered(m):
+			continue
+		var d := at.distance_to(Vector2(m.x, m.y))
+		if d > INTERACT_RANGE:
+			continue
+		var name := WorldData.resource_name(m.resource)
+		var t := {"type": "mine", "id": str(m.id), "x": float(m.x), "y": float(m.y), "action": "mine", "label": name + " 채굴"}
+		if economy != null:
+			t.action = economy.vein_action(str(m.id))
+			match t.action:
+				"mine":
+					t.label = "%s 캐기 +%s" % [name, economy.Hud.format_quantity(float(m.miningPower) * economy._multiplier())]
+				"secure":
+					t.label = name + " 광맥 확보"
+				_:
+					t.label = _site_name(str(m.resource)) + " 해금 필요"
+		consider.call(t, d, 0.0)
+	var fv: Vector2 = {"up": Vector2(0, -1), "down": Vector2(0, 1), "left": Vector2(-1, 0), "right": Vector2(1, 0)}.get(facing, Vector2.ZERO)
+	var boxes := WorldData.obstacle_boxes()
+	var b := Vector2(state.base)
+	consider.call({"type": "base", "id": "base", "x": b.x, "y": b.y, "action": "open", "label": "공방 들어가기"},
+		at.distance_to(b), _door_bonus(at, fv, b, boxes.base))
+	for i in state.workshops.size():
+		var w: Dictionary = state.workshops[i]
+		var recipe := "레시피 없음"
+		if w.recipeKey is String and economy != null:
+			recipe = economy._label(w.recipeKey)
+		consider.call({"type": "workshop", "id": str(w.id), "x": float(w.x), "y": float(w.y), "action": "open",
+			"label": "제작소 %d Lv.%d · %s" % [i + 1, int(w.level), recipe]}, at.distance_to(Vector2(w.x, w.y)), _door_bonus(at, fv, Vector2(w.x, w.y), boxes.workshop))
+	if economy == null:
+		return found.t
+	var village: Dictionary = economy.state.village
+	for key: String in Layout.ORDER:
+		var site: Variant = village.sites.get(key)
+		if site is Dictionary:
+			var vt: Dictionary = economy.village_target(key)
+			consider.call({"type": "village", "id": key, "x": site.x, "y": site.y, "action": vt.action, "label": vt.label},
+				at.distance_to(Vector2(site.x, site.y)), 0.0)
+	if village.get("district") is Dictionary:
+		var parts := Layout.district_parts(village.district)
+		var house: Dictionary = parts.house
+		consider.call({"type": "house", "id": "house", "x": house.x, "y": house.y, "action": "enter", "label": "내 집 · 들어가기"},
+			at.distance_to(Vector2(house.x, house.y)), 0.0)
+		var gt := _garden_target(economy, parts, at, fv)
+		if not gt.is_empty():
+			consider.call(gt, at.distance_to(Vector2(gt.x, gt.y)), 0.0)
+		var plaza: Dictionary = parts.plaza
+		consider.call({"type": "plaza", "id": "plaza", "x": plaza.x, "y": plaza.y - 0.15, "action": "open", "label": "마을 광장 · 안내판"},
+			at.distance_to(Vector2(plaza.x, plaza.y - 0.15)), 0.0)
+	return found.t
+
+
+func _site_name(resource: String) -> String:
+	for row: Dictionary in WorldData.sites():
+		if row.key == WorldData.resource(resource).get("site", ""):
+			return row.name
+	return "지역"
+
+
+func _door_bonus(at: Vector2, fv: Vector2, door: Vector2, box: Dictionary) -> float:
+	var dx := at.x - door.x
+	var dy := at.y - door.y
+	var d := sqrt(dx * dx + dy * dy)
+	var bonus := 0.0
+	if dx >= box.minX - 0.1 and dx <= box.maxX + 0.1 and dy >= -0.05 and dy <= DOOR.FRONT_DEPTH:
+		bonus += DOOR.FRONT
+	elif dy < box.minY:
+		bonus -= DOOR.BEHIND
+	if d > 1e-6:
+		bonus += DOOR.FACING * maxf(0.0, -(fv.x * dx + fv.y * dy) / d)
+	return bonus
+
+
+## The garden cell in front of the player (web villageGardenTarget).
+func _garden_target(economy: Node, parts: Dictionary, at: Vector2, fv: Vector2) -> Dictionary:
+	var G: Dictionary = Layout.V().GARDEN
+	var g: Dictionary = parts.garden
+	if absf(at.x - g.x) > g.hw + G.NEAR or absf(at.y - g.y) > g.hh + G.NEAR:
+		return {}
+	if fv == Vector2.ZERO:
+		fv = Vector2(0, 1)
+	var front := at + fv * float(G.AHEAD)
+	var best := {}
+	var best_d: float = G.CELL_REACH
+	for c: Dictionary in Layout.garden_cells(economy.state.village):
+		var d := front.distance_to(Vector2(c.x, c.y))
+		if d <= best_d:
+			best = c
+			best_d = d
+	if best.is_empty():
+		return {}
+	var t := {"type": "garden", "id": str(best.cell), "x": best.x, "y": best.y}
+	var carry := int(economy.garden_ui.carry)
+	var here: int = economy._decor_index(int(best.cell))
+	var list: Array = economy.state.village.decor
+	if carry >= 0 and economy._decor_index(carry) >= 0:
+		var kind := str(list[economy._decor_index(carry)].kind)
+		var name: String = Layout.decor_def(kind).name
+		if int(best.cell) == carry:
+			return t.merged({"action": "decorDrop", "label": name + " · 제자리에 두기"})
+		var why: String = economy.decor_problem(kind, int(best.cell), carry, at, true)
+		return t.merged({"action": "locked", "label": name + " · " + why} if not why.is_empty() else {"action": "decorDrop", "label": name + " · 여기로 옮기기"})
+	if here >= 0:
+		return t.merged({"action": "decorPick", "label": Layout.decor_def(str(list[here].kind)).name + " · 들어 옮기기"})
+	var selected: String = economy.decor_selected()
+	return t.merged({"action": "decorPlace", "label": "정원 · " + Layout.decor_def(selected).name + " 놓기"})
+
+
+## Does the target's action (web tdInteract). Returns the HUD tab to open ("" for none).
+func interact(id: String) -> String:
+	if _target.is_empty() or id != context_id(_target) or get_node("/root/Game").world_input_blocked():
+		return ""
+	var economy := _economy()
+	if economy == null:
+		return ""
+	var t := _target
+	var feet := to_units(player.position) if is_instance_valid(player) else Vector2(t.x, t.y)
+	match str(t.type):
 		"mine":
-			return "%s 캐기 +%s" % [name, economy.Hud.format_quantity(float(vein.miningPower) * economy._multiplier())]
-		"locked":
-			var site := ""
-			for row: Dictionary in WorldData.sites():
-				if row.key == WorldData.resource(vein.resource).get("site", ""):
-					site = row.name
-			return (site if not site.is_empty() else "지역") + " 해금 필요"
+			match str(t.action):
+				"secure":
+					if economy.secure_vein(str(t.id)):
+						show_toast("확보!")
+						queue_redraw()
+				"mine":
+					economy.mine_vein(str(t.id))
+				_:
+					show_toast(str(t.label))
+		"base":
+			return "workshop"
+		"workshop":
+			return "craft"
+		"village":
+			match str(t.action):
+				"restore":
+					economy.restore_facility(str(t.id))
+				"appraise":
+					economy.appraise_relic(str(t.id))
+				"donate":
+					var n: int = economy.donate_all_relics()
+					if n > 0:
+						show_toast("유물 %d점 기증 · 전시" % n)
+				"locked":
+					show_toast(str(t.label))
+				_:
+					return "village"
+		"plaza":
+			return "village"
+		"house":
+			var door: Dictionary = Layout.district_parts(economy.state.village.district).house
+			economy.state.position = {"scene": scene_file_path_of_level(), "x": door.x * UNIT, "y": (door.y + 0.2) * UNIT}
+			get_node("/root/Game").go("res://scenes/world/house.tscn", "Start")
+		"garden":
+			var cell := int(t.id)
+			match str(t.action):
+				"decorPlace":
+					economy.decor_place(economy.decor_selected(), cell, feet)
+				"decorPick":
+					economy.garden_ui.carry = cell
+					economy.changed.emit()
+					show_toast("들었어요 · 옮길 칸에서 E")
+				"decorDrop":
+					var from := int(economy.garden_ui.carry)
+					if from == cell or economy.decor_move(from, cell, feet):
+						economy.garden_ui.carry = -1
+						economy.changed.emit()
+						show_toast("제자리에 두었어요" if from == cell else "옮겼어요")
+				_:
+					show_toast(str(t.label))
 	return ""
+
+
+func scene_file_path_of_level() -> String:
+	return get_parent().scene_file_path
+
+
+## T: picks up the torch at hand or sets one down in front (web torchAct).
+func torch_act() -> void:
+	var economy := _economy()
+	if economy == null or not is_instance_valid(player) or get_node("/root/Game").world_input_blocked():
+		return
+	var r: Dictionary = economy.torch_act(to_units(player.position), str(player.get("facing")))
+	show_toast(str(r.text))
+
+
+## R takes back the carried decoration or the one in front; Q chooses the next kind (web tdGardenButtonNow).
+func garden_key(take: bool) -> void:
+	var economy := _economy()
+	if economy == null or get_node("/root/Game").world_input_blocked():
+		return
+	if not take:
+		show_toast("정원 장식: " + Layout.decor_def(economy.decor_cycle()).name)
+		return
+	var cell := int(economy.garden_ui.carry)
+	if cell < 0 and _target.get("type") == "garden" and _target.get("action") == "decorPick":
+		cell = int(_target.id)
+	if cell >= 0:
+		var kind: String = economy.decor_remove(cell)
+		if not kind.is_empty():
+			show_toast(Layout.decor_def(kind).name + " 회수")
+
 
 func _on_tunnel_opened(_added: Array) -> void:
 	_refresh_terrain.call_deferred()

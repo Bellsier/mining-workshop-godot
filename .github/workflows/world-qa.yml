@@ -85,6 +85,12 @@ jobs:
           set -o pipefail
           godot --headless --path . --script res://tools/village_layout_test.gd 2>&1 | tee "$RUNNER_TEMP/village-layout.log"
           grep -F 'VILLAGE LAYOUT PASS' "$RUNNER_TEMP/village-layout.log"
+      - name: World objects played through the world map (huts, village, house, garden, torches)
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout 120 godot --headless --path . --fixed-fps 60 --script res://tools/world_objects_test.gd 2>&1 | tee "$RUNNER_TEMP/world-objects.log"
+          grep -F 'WORLD OBJECTS PASS' "$RUNNER_TEMP/world-objects.log"
       - name: Large saves with huts (import, autosave, load times and nothing lost)
         shell: bash
         run: |

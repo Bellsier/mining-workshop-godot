@@ -227,6 +227,17 @@ func _web_save_huts_load() -> void:
 	_check(game.state.completed_research.get("workshopBuild") == true and game.state.completed_research.get("autoCraftDevice") == true,
 		"the web save's research is kept")
 	_check(game.legacy_original_bytes() == bytes, "the web save stays byte for byte")
+	# The rest of the web world comes along: the player's spot, the torches, the tunnel job and the village layout.
+	var web_world: Dictionary = original.run.world
+	_check(game.state.position.get("scene") == "res://scenes/world/world_map.tscn" and float(game.state.position.x) == float(web_world.player.x) * 64.0
+		and float(game.state.position.y) == float(web_world.player.y) * 64.0, "the web player's position is kept: %s" % [game.state.position])
+	_check(game.world.torches.size() == web_world.torches.size() and float(game.world.torches[0].x) == float(web_world.torches[0].x), "the web torches are kept")
+	var contract: Variant = web_world.tunnelContract
+	_check(game.world.tunnel_contract.is_empty() if web_world.tunnelUnlocked or contract == null
+		else float(game.world.tunnel_contract.startedAt) == float(contract.startedAt), "the web tunnel job is kept (none once the tunnel is open)")
+	var web_village: Dictionary = original.run.village
+	_check(float(game.state.village.sites.appraiser.x) == float(web_village.sites.appraiser.x) and float(game.state.village.district.x) == float(web_village.district.x)
+		and game.state.village.decor.size() == web_village.decor.size(), "the web village layout and garden are kept: %s" % [game.state.village.get("district")])
 	# The Godot save carries the huts, and a reload of it has them again, progress to the bit.
 	game.world.workshops[0].progress = 4.579669976578771e-15
 	var text: String = game.export_save()

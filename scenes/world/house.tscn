@@ -1,0 +1,27 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/level.gd" id="1_level"]
+[ext_resource type="Script" path="res://scripts/world/house_room.gd" id="2_room"]
+[ext_resource type="PackedScene" path="res://scenes/player.tscn" id="3_player"]
+[ext_resource type="Script" path="res://scripts/touch_stick.gd" id="4_stick"]
+
+[node name="House" type="Node2D"]
+script = ExtResource("1_level")
+
+[node name="World" type="Node2D" parent="."]
+script = ExtResource("2_room")
+
+[node name="Spawns" type="Node2D" parent="."]
+
+[node name="Start" type="Marker2D" parent="Spawns"]
+position = Vector2(144, 185.6)
+
+[node name="Player" parent="." instance=ExtResource("3_player")]
+position = Vector2(144, 185.6)
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="TouchStick" type="Control" parent="UI"]
+layout_mode = 3
+anchors_preset = 0
+script = ExtResource("4_stick")

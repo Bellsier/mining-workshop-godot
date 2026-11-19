@@ -80,8 +80,10 @@ func bind_level(level: Node2D, player: Node2D) -> void:
 func _process(_delta: float) -> void:
 	if _hud == null or not is_instance_valid(workshop.player) or workshop.input_frozen():
 		return
-	var next: String = _world.context_at(workshop.player.position) if is_instance_valid(_world) else ""
-	var action: String = _world.action_label(next) if is_instance_valid(_world) else ""
+	# During a scene change the old world is still valid but no longer in the tree.
+	var live := is_instance_valid(_world) and _world.is_inside_tree()
+	var next: String = _world.context_at(workshop.player.position) if live else ""
+	var action: String = _world.action_label(next) if live else ""
 	if next != _context or action != _context_action:
 		_context = next
 		_context_action = action
@@ -91,21 +93,40 @@ func _process(_delta: float) -> void:
 var _context_action := ""
 
 func _unhandled_key_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_E:
-		if not _context.is_empty() and not workshop_is_open():
-			_interact()
-			get_viewport().set_input_as_handled()
+	if not (event is InputEventKey and event.pressed and not event.echo) or workshop_is_open():
+		return
+	match event.physical_keycode:
+		KEY_E, KEY_SPACE:
+			if not _context.is_empty():
+				_interact()
+				get_viewport().set_input_as_handled()
+		KEY_T:
+			# web: T sets a torch down in front or picks the one at hand up
+			if is_instance_valid(_world) and _world.has_method("torch_act"):
+				_world.torch_act()
+				get_viewport().set_input_as_handled()
+		KEY_R, KEY_Q:
+			# web: R takes a garden decoration back, Q chooses the next kind
+			if is_instance_valid(_world) and _world.has_method("garden_key"):
+				_world.garden_key(event.physical_keycode == KEY_R)
+				get_viewport().set_input_as_handled()
 
 func _interact() -> void:
-	if workshop.input_frozen():
+	if workshop.input_frozen() or _context.is_empty() or workshop_is_open():
 		return
 	if _context == "workshop":
 		_hud.open_workshop()
-	elif not _context.is_empty() and not workshop_is_open():
-		if _world.has_method("mine_near_vein"):
-			_world.mine_near_vein()
-		else:
-			workshop.mine(_context)
+		return
+	if is_instance_valid(_world) and _world.has_method("interact"):
+		var tab: String = _world.interact(_context)
+		if tab == "workshop":
+			_hud.open_workshop()
+		elif not tab.is_empty():
+			_hud.open_tab(tab)
+	elif is_instance_valid(_world) and _world.has_method("mine_near_vein"):
+		_world.mine_near_vein()
+	else:
+		workshop.mine(_context)
 
 func workshop_is_open() -> bool:
 	return _hud != null and _hud.is_workshop_open()

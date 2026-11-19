@@ -118,14 +118,32 @@ static func obstacles(world: RefCounted, village: Dictionary, carry := -1) -> Ar
 class Index:
 	var buckets := {}
 	var boxes: Array = []
+	var foot: Dictionary
 
 	func _init(list: Array) -> void:
 		boxes = list
+		foot = WorldData.player_foot()
 		for o: Dictionary in list:
 			var key := Vector2i(int(floor((o.minX + o.maxX) / 2.0)), int(floor((o.minY + o.maxY) / 2.0)))
 			if not buckets.has(key):
 				buckets[key] = []
 			buckets[key].append(o)
+
+	## Does the player's foot box at (x, y) touch a box? (Looks at the boxes centred within 2 cells.)
+	func blocks(x: float, y: float) -> bool:
+		var hw: float = foot.HALF_W
+		var hh: float = foot.HALF_H
+		var cx := int(floor(x))
+		var cy := int(floor(y))
+		for j in range(cy - 2, cy + 3):
+			for i in range(cx - 2, cx + 3):
+				var b: Variant = buckets.get(Vector2i(i, j))
+				if b == null:
+					continue
+				for o: Dictionary in b:
+					if x + hw > o.minX and x - hw < o.maxX and y + hh > o.minY and y - hh < o.maxY:
+						return true
+		return false
 
 	## Boxes whose centre is within 2 cells of (x, y): every box a small foot box at (x, y) could touch.
 	func near(x: float, y: float) -> Array:
@@ -144,10 +162,7 @@ class Index:
 static func can_stand(index: Index, tunnel_open: bool, x: float, y: float) -> bool:
 	if not WorldTerrain.is_point_walkable(x, y, tunnel_open):
 		return false
-	for o: Dictionary in index.near(x, y):
-		if foot_overlaps(o, x, y):
-			return false
-	return true
+	return not index.blocks(x, y)
 
 
 ## The reach check over a rectangle, flood-filled from `start` (web villageReachArea). Returns a Callable
