@@ -350,12 +350,14 @@ func _refresh(force := false) -> void:
 	_refresh_pending = false
 	if not is_instance_valid(_workshop):
 		return
-	var state: Dictionary = _workshop.call("snapshot")
-	var gold := float(state.get("gold", 0))
-	_gold.text = format_quantity(gold) + " G"
+	# With the panel closed only the gold line shows: read it alone. (The full snapshot works out every tab,
+	# the next craft hut's spot among them, and this runs on every change of the game.)
+	_gold.text = format_quantity(float(_workshop.get("state").get("gold", 0))) + " G"
 	_panel_gold.text = _gold.text
 	if not is_workshop_open():
 		return
+	var state: Dictionary = _workshop.call("snapshot")
+	var gold := float(state.get("gold", 0))
 	if _active_tab == TAB_SAVE and is_instance_valid(_save_input):
 		return
 	var focused := get_viewport().gui_get_focus_owner()

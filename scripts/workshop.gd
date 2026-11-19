@@ -689,9 +689,22 @@ func hut_build_block() -> String:
 	var count: int = world.workshops.size()
 	if float(state.gold) < CraftHuts.build_cost(data, count) or not _has(CraftHuts.build_products(data, count)):
 		return "cost"
-	if CraftHuts.build_spot(world.base, world.mines, world.workshops, world.is_seeded(), true, world, state.village) == null:
+	if not _hut_spot_free():
 		return "spot"
 	return ""
+
+var _spot_key := ""
+var _spot_free := false
+
+## Is there a free cell for the next hut? Worked out again only when what it depends on changed: the search
+## lays the village roads out and measures every cell round the workshop against them.
+func _hut_spot_free() -> bool:
+	var key := "%s|%s|%s|%s" % [_village_key(), world.base, world.is_seeded(),
+		JSON.stringify(world.mines.map(func(m: Dictionary) -> Array: return [m.x, m.y]))]
+	if key != _spot_key:
+		_spot_key = key
+		_spot_free = CraftHuts.build_spot(world.base, world.mines, world.workshops, world.is_seeded(), true, world, state.village) != null
+	return _spot_free
 
 ## Builds the next hut on the first free cell round the workshop (web buildWorkshop).
 func build_hut(_id := "") -> bool:
@@ -1364,13 +1377,17 @@ func _garden_snapshot() -> Dictionary:
 var _roads_key := ""
 var _roads: Array = []
 
-## The village roads now, worked out again only when what they depend on changed (web villageRoads cache).
-func village_roads() -> Array:
+## What the village roads depend on: the district, the facility sites, the veins, the huts and the tunnel.
+func _village_key() -> String:
 	var huts := PackedStringArray()
 	for w: Dictionary in world.workshops:
 		huts.append("%d,%d" % [int(w.x), int(w.y)])
-	var key := "%s|%s|%d|%s|%s" % [JSON.stringify(state.village.get("district")), JSON.stringify(state.village.get("sites")),
+	return "%s|%s|%d|%s|%s" % [JSON.stringify(state.village.get("district")), JSON.stringify(state.village.get("sites")),
 		world.mines.size(), ";".join(huts), world.tunnel_unlocked]
+
+## The village roads now, worked out again only when what they depend on changed (web villageRoads cache).
+func village_roads() -> Array:
+	var key := _village_key()
 	if key != _roads_key:
 		_roads_key = key
 		_roads = VillageLayout.roads(world, state.village)
