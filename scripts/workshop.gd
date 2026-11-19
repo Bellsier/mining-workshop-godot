@@ -9,6 +9,7 @@ const World = preload("res://scripts/world/world_state.gd")
 const Save = preload("res://scripts/workshop_save.gd")
 const Delivery = preload("res://scripts/workshop_delivery.gd")
 const Village = preload("res://scripts/workshop_village.gd")
+const CraftHuts = preload("res://scripts/craft_huts.gd")
 const CATALOG := "res://data/web_catalog.json"
 const TICK := 0.1
 ## Ten 0.1 s ticks sum to slightly less than 1 s in floating point; the boundary must not slip a tick.
@@ -465,9 +466,23 @@ func _restore(source: Dictionary) -> void:
 		state.workforce = _dictionary(run.get("workforce"))
 		state.tunnel_open = bool(_dictionary(run.get("world")).get("tunnelUnlocked", false))
 
-	var world_data: Dictionary = source.get("world", _dictionary(legacy_run.get("world")))
+	var legacy_world := _dictionary(legacy_run.get("world"))
+	var world_data: Dictionary = source.get("world", legacy_world)
+	# Craft huts: a Godot save written before huts were ported has no "workshops" in its world. The huts of
+	# the web save it was imported from are then taken from that save, so they are not lost.
+	if not world_data.has("workshops") and legacy_world.has("workshops"):
+		world_data = world_data.duplicate()
+		world_data["workshops"] = legacy_world.workshops
 	world = World.from_dict(world_data) if world_data.has("mines") else World.new_game()
+	if not world_data.has("mines"):
+		world.workshops = CraftHuts.sanitize(world_data.get("workshops", []), _tables.recipes, world.is_seeded())
 	World.set_current(world)
+	# Like the web researchSyncFromState: huts or automation already in use count as researched.
+	var in_use := CraftHuts.research_in_use(world.workshops, _dictionary(state.automation.get("craft")))
+	if in_use.any(func(key: String) -> bool: return state.completed_research.get(key, false) != true):
+		state.completed_research = _dictionary(state.completed_research)
+		for key in in_use:
+			state.completed_research[key] = true
 	world.exploration_gear = bool(state.completed_research.get("explorationGear", false))
 	if state.tunnel_open and not world.tunnel_unlocked:
 		world.unlock_tunnel()
@@ -503,6 +518,158 @@ func order_tunnel(_id := "") -> bool:
 	state.tunnel_remaining = float(rules.DURATION_SEC)
 	return _updated("터널 공사를 시작했어요.")
 
+# --- craft huts (제작소) ----------------------------------------------------------------------------------
+# The web original's factory.js workshop rules; the pure parts are in scripts/craft_huts.gd.
+
+func hut_by_id(id: String) -> Dictionary:
+	for hut: Dictionary in world.workshops:
+		if hut.id == id:
+			return hut
+	return {}
+
+## Why the next hut cannot be built ("" when it can): research, the limit, gold and parts, then a free cell.
+func hut_build_block() -> String:
+	if not state.completed_research.get("workshopBuild", false):
+		return "research"
+	if world.workshops.size() >= CraftHuts.max_count(data, state.completed_research):
+		return "limit"
+	var count: int = world.workshops.size()
+	if float(state.gold) < CraftHuts.build_cost(data, count) or not _has(CraftHuts.build_products(data, count)):
+		return "cost"
+	if CraftHuts.build_spot(world.base, world.mines, world.workshops, world.is_seeded(), true) == null:
+		return "spot"
+	return ""
+
+## Builds the next hut on the first free cell round the workshop (web buildWorkshop).
+func build_hut(_id := "") -> bool:
+	var block := hut_build_block()
+	if not block.is_empty():
+		return _reject({"research": "먼저 연구에서 \"제작소 건설\"을 마쳐 주세요.", "limit": "제작소를 더 지을 수 없어요.",
+			"cost": "제작소를 지을 비용이 부족해요.", "spot": "공방 주변에 제작소를 지을 빈 자리가 없어요."}[block])
+	var spot: Vector2i = CraftHuts.build_spot(world.base, world.mines, world.workshops, world.is_seeded())
+	var count: int = world.workshops.size()
+	var taken := {}
+	for hut: Dictionary in world.workshops:
+		taken[hut.id] = true
+	_pay({"gold": CraftHuts.build_cost(data, count), "products": CraftHuts.build_products(data, count)})
+	world.workshops.append({"id": CraftHuts.new_id(taken), "x": spot.x, "y": spot.y, "level": 1,
+		"recipeKey": null, "auto": false, "progress": null})
+	_record_world()
+	return _updated("제작소 건설 · (%d, %d)" % [spot.x, spot.y])
+
+## Raises one hut a level: gold, and for the top levels some high-tier parts (web upgradeWorkshop).
+func upgrade_hut(id: String) -> bool:
+	var hut := hut_by_id(id)
+	var cost := CraftHuts.upgrade_cost(data, hut) if not hut.is_empty() else {}
+	if cost.is_empty():
+		return false
+	if not _pay(cost):
+		return _reject("제작소 업그레이드 비용이 부족해요.")
+	hut.level = int(hut.level) + 1
+	_record_world()
+	return _updated("제작소 Lv.%d" % hut.level)
+
+## Chooses what a hut makes ("" = nothing). Not while it is making something (web setWorkshopRecipe).
+func set_hut_recipe(id: String, recipe_id: String) -> bool:
+	var hut := hut_by_id(id)
+	var key: Variant = null if recipe_id.is_empty() else recipe_id
+	if hut.is_empty() or (key != null and not _tables.recipes.has(key)):
+		return false
+	if hut.progress != null:
+		return _reject("제작 중에는 레시피를 바꿀 수 없어요.")
+	if hut.recipeKey == key:
+		return false
+	hut.recipeKey = key
+	_record_world()
+	return _updated()
+
+## Switches a hut's automatic crafting. Turning it on needs a recipe and 자동 제작 장치, and starts a craft
+## at once when the inputs are there (the web hut card's checkbox).
+func set_hut_auto(id: String, enabled: bool) -> bool:
+	var hut := hut_by_id(id)
+	if hut.is_empty():
+		return false
+	if enabled and hut.recipeKey == null:
+		return _reject("먼저 레시피를 정해 주세요.")
+	if enabled and not state.completed_research.get("autoCraftDevice", false):
+		return _reject("자동 제작 장치 연구가 필요해요.")
+	hut.auto = enabled
+	if enabled:
+		_start_hut(hut)
+	_record_world()
+	return _updated()
+
+## Starts one craft in a hut by hand (web craftWorkshop).
+func craft_hut(id: String) -> bool:
+	var hut := hut_by_id(id)
+	if hut.is_empty() or hut.recipeKey == null:
+		return _reject("먼저 레시피를 정해 주세요.")
+	if not _start_hut(hut):
+		return _reject("재료가 부족하거나 제작 중이에요.")
+	_record_world()
+	return _updated("%s %s" % [_label(hut.recipeKey), "제작 시작" if hut.progress != null else "제작 완료"])
+
+func _start_hut(hut: Dictionary) -> bool:
+	if hut.progress != null:
+		return false
+	var recipe: Dictionary = _tables.recipes.get(hut.recipeKey, {}) if hut.recipeKey is String else {}
+	if recipe.is_empty() or not _has(recipe.need):
+		return false
+	_consume(recipe.need)
+	var time := CraftHuts.craft_time(data, hut, recipe, Delivery.reputation_effect(data, state, "craftSpeed"))
+	if time > 0.0:
+		hut.progress = time
+	else:
+		_add(recipe.key, float(recipe.out))
+	return true
+
+## One tick of every hut (web tickWorkshops): crafts in progress count down by exactly 0.1 s and finish at 0
+## or below; then idle automatic huts start again unless their craft target is reached.
+func _tick_huts() -> bool:
+	var mutated := false
+	for hut: Dictionary in world.workshops:
+		if hut.progress == null:
+			continue
+		mutated = true
+		var recipe: Dictionary = _tables.recipes.get(hut.recipeKey, {}) if hut.recipeKey is String else {}
+		if recipe.is_empty():
+			hut.progress = null
+			continue
+		hut.progress = float(hut.progress) - TICK
+		if hut.progress <= 0.0:
+			hut.progress = null
+			_add(recipe.key, float(recipe.out))
+	if state.completed_research.get("autoCraftDevice", false):
+		for hut: Dictionary in world.workshops:
+			if hut.auto != true or hut.progress != null:
+				continue
+			if hut.recipeKey is String and _at_craft_target(hut.recipeKey):
+				continue
+			mutated = _start_hut(hut) or mutated
+	return mutated
+
+func _at_craft_target(id: String) -> bool:
+	var target := int(state.automation.target.get(id, 0))
+	return target > 0 and float(state.inventory.get(id, 0)) >= target
+
+func hut_status(hut: Dictionary) -> Dictionary:
+	var recipe: Dictionary = _tables.recipes.get(hut.recipeKey, {}) if hut.recipeKey is String else {}
+	return CraftHuts.status(hut, recipe, state.inventory, state.completed_research.get("autoCraftDevice", false) == true,
+		int(state.automation.target.get(str(hut.recipeKey), 0)))
+
+func _huts_snapshot() -> Dictionary:
+	var list: Array = []
+	for index in world.workshops.size():
+		var hut: Dictionary = world.workshops[index]
+		var st := hut_status(hut)
+		list.append({"id": hut.id, "number": index + 1, "x": hut.x, "y": hut.y, "level": hut.level,
+			"recipe": hut.recipeKey if hut.recipeKey != null else "", "auto": hut.auto,
+			"progress": hut.progress if hut.progress != null else 0.0, "status": st.state, "shortages": st.shortages,
+			"upgrade": CraftHuts.upgrade_cost(data, hut)})
+	var count: int = world.workshops.size()
+	return {"list": list, "max": CraftHuts.max_count(data, state.completed_research), "block": hut_build_block(),
+		"cost": {"gold": CraftHuts.build_cost(data, count), "products": CraftHuts.build_products(data, count)}}
+
 func snapshot() -> Dictionary:
 	var recipes: Array = []
 	var resources: Array = []
@@ -520,7 +687,8 @@ func snapshot() -> Dictionary:
 	for row: Dictionary in data.recipes:
 		recipes.append({"id": row.key, "name": row.name, "inputs": row.need, "output": row.key,
 			"count": row.out, "sell": row.sell, "time": row.craftTime, "remaining": state.queue.get(row.key, 0),
-			"workshop_only": row.get("workshopOnly", false), "auto_sell_cost": _auto_sell_cost(row)})
+			"workshop_only": row.get("workshopOnly", false), "auto_sell_cost": _auto_sell_cost(row),
+			"locked": Delivery._needs_locked_resource(data, state, row, [])})
 	for row: Dictionary in data.research:
 		research.append({"id": row.key, "name": row.name, "cost": _research_cost(row), "requires": row.requires, "description": row.desc})
 	for row: Dictionary in data.sites:
@@ -532,7 +700,7 @@ func snapshot() -> Dictionary:
 		"owned_workers": assigned, "worker_details": workers, "tickets": state.tickets, "research": research,
 		"completed_research": state.completed_research, "stats": state.stats, "automation": state.automation,
 		"tunnel": {"open": world.tunnel_unlocked, "remaining": ceili(state.tunnel_remaining), "cost": data.balance.tunnel},
-		"sites": sites, "upgrades": _upgrade_options(), "deliveries": Delivery.offers(data, state),
+		"sites": sites, "upgrades": _upgrade_options(), "huts": _huts_snapshot(), "deliveries": Delivery.offers(data, state),
 		"reputation": Delivery.reputation(data, state), "village": Village.snapshot(data, state.village), "save_error": _save_error}
 
 func is_resource_open(id: String) -> bool:
@@ -1044,6 +1212,8 @@ func _tick() -> bool:
 			var target := int(state.automation.target.get(id, 0))
 			if state.automation.craft[id] and (target == 0 or float(state.inventory.get(id, 0)) < target):
 				mutated = _start_craft(id) or mutated
+	# The web tickStep order: recipe cards, then the huts, then trade, orders and auto-sell.
+	mutated = _tick_huts() or mutated
 	for id: String in state.automation.sell:
 		if state.automation.sell[id] and state.automation.sell_owned.get(id, false):
 			# Original canAutoSell: only recipes marked workshopOnly are excluded; the flag defaults to false.
@@ -1075,6 +1245,9 @@ func _valid_save_state(imported: Dictionary) -> bool:
 		elif not legacy_world.get("tunnelUnlocked", false) is bool:
 			return false
 	if imported.has("world") and not _valid_world(imported.world):
+		return false
+	# A Godot save always writes its huts as a list; anything else is not ours (a web save's are cleaned).
+	if imported.has("world") and not imported.world.get("workshops", []) is Array:
 		return false
 	var remaining: Variant = imported.get("tunnel_remaining", 0.0)
 	if not (remaining is int or remaining is float) or not is_finite(float(remaining)) or float(remaining) < 0.0:

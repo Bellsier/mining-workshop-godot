@@ -5,6 +5,7 @@ extends RefCounted
 ##   base {x, y, level}, mines [...], hiddenMineIds [...], tunnelUnlocked, and for the seeded world
 ##   seed, size, generatorVersion, chunkEditsVersion, chunkEdits.
 ## Godot adds `layoutSeed`: the seed the new-game layout was drawn with (the web used Math.random).
+## `workshops` are the craft huts (제작소), kept in the web shape; their rules are in scripts/craft_huts.gd.
 ##
 ## One instance is shared by every scene through Engine meta (current / set_current), so it survives scene
 ## changes. Saving it is left to the save system (see docs/WORLD_MIGRATION.md).
@@ -14,6 +15,7 @@ const WorldTerrain := preload("res://scripts/world/world_terrain.gd")
 const WorldGen := preload("res://scripts/world/world_gen.gd")
 const ChunkGen := preload("res://scripts/world/chunk_gen.gd")
 const WorldRandom := preload("res://scripts/world/world_random.gd")
+const CraftHuts := preload("res://scripts/craft_huts.gd")
 const SELF_PATH := "res://scripts/world/world_state.gd"
 
 const META_KEY := "mining_world_state"
@@ -35,6 +37,8 @@ var base := Vector2i(2, 0)
 var base_level := 1
 var mines: Array = []
 var hidden_ids: Array[String] = []
+## Craft huts (web state.world.workshops): {id, x, y, level, recipeKey, auto, progress}.
+var workshops: Array = []
 var tunnel_unlocked := false
 var exploration_gear := false
 ## Seeded outer world (web 256 test world). Empty when off.
@@ -276,7 +280,8 @@ func to_dict() -> Dictionary:
 		if not _generated_ids.has(id):
 			saved_hidden.append(id)
 	var d := {"layoutSeed": layout_seed, "base": {"x": base.x, "y": base.y, "level": base_level},
-		"mines": saved_mines, "hiddenMineIds": saved_hidden, "tunnelUnlocked": tunnel_unlocked}
+		"mines": saved_mines, "hiddenMineIds": saved_hidden, "tunnelUnlocked": tunnel_unlocked,
+		"workshops": workshops.duplicate(true)}
 	if is_seeded():
 		for k in seeded:
 			d[k] = seeded[k].duplicate(true) if seeded[k] is Dictionary else seeded[k]
@@ -322,4 +327,12 @@ static func from_dict(d: Dictionary) -> RefCounted:
 		if ChunkGen.is_valid_context(ctx):
 			s.seeded = {"seed": int(d.seed), "size": SEEDED_SIZE, "generatorVersion": ctx.generatorVersion,
 				"chunkEditsVersion": 1, "chunkEdits": (d.get("chunkEdits", {}) as Dictionary).duplicate(true)}
+	s.workshops = CraftHuts.sanitize(d.get("workshops", []), _recipe_table(), s.is_seeded())
 	return s
+
+## Recipe rows by key, for checking a saved hut's recipe.
+static func _recipe_table() -> Dictionary:
+	var table := {}
+	for row: Dictionary in WorldData.catalog().get("recipes", []):
+		table[row.key] = row
+	return table

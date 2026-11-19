@@ -311,7 +311,7 @@ func _refresh(force := false) -> void:
 	if not force and focused is LineEdit and focused.has_meta("craft_target"):
 		return
 	if not force:
-		if _active_tab == TAB_WORKERS:
+		if _active_tab in [TAB_WORKERS, TAB_CRAFT]:
 			for picker in _worker_pickers:
 				if picker.get_popup().visible:
 					return
@@ -345,7 +345,10 @@ func _refresh(force := false) -> void:
 			_names[output] = _names[id]
 	match _active_tab:
 		TAB_INVENTORY: _render_inventory(inventory)
-		TAB_CRAFT: _render_recipes(recipes, inventory, automation, bool(state.get("completed_research", {}).get("autoCraftDevice", false)))
+		TAB_CRAFT:
+			var auto_unlocked := bool(state.get("completed_research", {}).get("autoCraftDevice", false))
+			_render_huts(state.get("huts", {}), recipes, inventory, gold, auto_unlocked)
+			_render_recipes(recipes, inventory, automation, auto_unlocked)
 		TAB_SELL: _render_sales(resources, products, recipes, inventory, automation, gold)
 		TAB_WORKERS: _render_workers(state.get("workers", []), state.get("worker_details", []), resources, gold)
 		TAB_RESEARCH:
@@ -386,7 +389,12 @@ func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: 
 			var remaining := []
 			for recipe in recipes:
 				remaining.append(ceili(float(recipe.get("remaining", 0))))
-			return JSON.stringify([visible_quantities, automation, completed, remaining])
+			var huts: Array = []
+			for hut: Dictionary in state.get("huts", {}).get("list", []):
+				# Seconds left in tenths, like the web hut card; the rest only when it changes.
+				var upgrade_gold := float(hut.get("upgrade", {}).get("gold", INF))
+				huts.append([hut.id, hut.level, hut.recipe, hut.auto, hut.status, ceili(float(hut.progress) * 10.0), gold >= upgrade_gold])
+			return JSON.stringify([visible_quantities, automation, completed, remaining, huts, state.get("huts", {}).get("block", "")])
 		TAB_SELL: return JSON.stringify([shown_quantities, automation, gold])
 		TAB_RESEARCH: return JSON.stringify([state.get("tunnel", {}), visible_quantities, completed, state.get("sites", []), state.get("upgrades", []), gold])
 		TAB_VILLAGE: return JSON.stringify([visible_quantities, state.get("village", {}), gold])
@@ -429,6 +437,84 @@ static func format_quantity(value: float) -> String:
 		grouped = "," + digits.substr(digits.length() - 3) + grouped
 		digits = digits.substr(0, digits.length() - 3)
 	return digits + grouped
+
+const HUT_STATUS := {"noRecipe": "레시피를 선택하세요", "full": "목표 재고 도달 · 쉬는 중", "waiting": "대기 중"}
+
+## The craft huts (web renderWorkshopBuild / renderWorkshops): a build button, then one card per hut with its
+## recipe picker, a craft button, the upgrade and the automatic switch.
+func _render_huts(huts: Dictionary, recipes: Array, inventory: Dictionary, gold: float, auto_unlocked: bool) -> void:
+	if huts.is_empty() or not _workshop.has_method("build_hut"):
+		return
+	var list: Array = huts.get("list", [])
+	_rows.add_child(_label("제작소 %d / %d곳" % [list.size(), int(huts.get("max", 0))], 12))
+	var block := str(huts.get("block", ""))
+	if block == "research":
+		_rows.add_child(_label("제작소를 지으려면 연구 탭에서 \"제작소 건설\"을 연구하세요.", 10))
+	elif block == "limit":
+		_rows.add_child(_label("제작소를 더 지을 수 없어요. (최대 %d곳)" % int(huts.get("max", 0)), 10))
+	else:
+		var cost: Dictionary = huts.get("cost", {})
+		var parts: Dictionary = cost.get("products", {})
+		var details := "%s G" % format_quantity(float(cost.get("gold", 0)))
+		if not parts.is_empty():
+			details += " · " + _describe_items(parts)
+		if block == "spot":
+			details += " · 공방 주변에 빈 자리가 없어요"
+		_add_row("제작소 짓기", details, "짓기", "build_hut", "build_hut", block.is_empty())
+	var options: Array = []
+	for recipe in recipes:
+		options.append(recipe)
+	for hut: Dictionary in list:
+		var recipe_id := str(hut.recipe)
+		var label: String = HUT_STATUS.get(str(hut.status), "")
+		if str(hut.status) == "working":
+			label = "제작 중... %.1f초" % float(hut.progress) if float(hut.progress) > 0.0 else ("자동 제작 중" if hut.auto else "대기 중")
+		elif str(hut.status) == "blocked":
+			label = "자동 제작 중 · 재료 부족" if hut.auto else "재료 부족"
+		var title := "제작소 %d Lv.%d" % [int(hut.number), int(hut.level)]
+		var row_id := "craft_hut:" + str(hut.id)
+		var inputs: Dictionary = {}
+		for recipe in options:
+			if _item_id(recipe) == recipe_id:
+				inputs = recipe.get("inputs", recipe.get("need", {}))
+		var ready := not recipe_id.is_empty() and float(hut.progress) <= 0.0 and _has_items(inventory, inputs)
+		var actions := _add_row(title, "위치 (%d, %d) · %s" % [int(hut.x), int(hut.y), label], "제작", "craft_hut", str(hut.id), ready)
+		var picker := OptionButton.new()
+		picker.custom_minimum_size = Vector2(96, 26)
+		picker.add_item("레시피 없음")
+		var keys := PackedStringArray([""])
+		for recipe in options:
+			var id := _item_id(recipe)
+			if id == recipe_id or not bool(recipe.get("locked", false)):
+				keys.append(id)
+				picker.add_item(_name_for(id))
+		picker.select(maxi(0, keys.find(recipe_id)))
+		picker.disabled = float(hut.progress) > 0.0
+		picker.item_selected.connect(_choose_hut_recipe.bind(str(hut.id), keys))
+		picker.get_popup().popup_hide.connect(_schedule_refresh)
+		picker.set_meta("row_id", row_id)
+		_buttons_by_id[row_id] = picker
+		_worker_pickers.append(picker)
+		actions.add_child(picker)
+		var upgrade: Dictionary = hut.get("upgrade", {})
+		if upgrade.is_empty():
+			actions.add_child(_label("최대 레벨", 10))
+		else:
+			var needs: Dictionary = upgrade.get("products", {})
+			var caption := "업그레이드 Lv.%d · %s G" % [int(hut.level) + 1, format_quantity(float(upgrade.gold))]
+			if not needs.is_empty():
+				caption += " + " + _describe_items(needs)
+			var button := _button(caption, _perform.bind("upgrade_hut", str(hut.id)))
+			button.disabled = gold < float(upgrade.gold) or not _has_items(inventory, needs)
+			actions.add_child(button)
+		if auto_unlocked and not recipe_id.is_empty():
+			_add_toggle(actions, "자동 제작", "set_hut_auto", str(hut.id), bool(hut.auto))
+		elif not auto_unlocked:
+			actions.add_child(_label("자동 제작 (연구: 자동 제작 장치)", 9))
+
+func _choose_hut_recipe(index: int, hut_id: String, keys: PackedStringArray) -> void:
+	_workshop.call("set_hut_recipe", hut_id, keys[index])
+	_schedule_refresh()
 
 func _render_recipes(recipes: Array, inventory: Dictionary, automation: Dictionary, auto_craft_unlocked: bool) -> void:
 	var auto_craft: Dictionary = automation.get("craft", {})
