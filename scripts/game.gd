@@ -34,6 +34,11 @@ func _ready() -> void:
 			_hud.setup(workshop)
 	if OS.has_feature("web"):
 		_web_window = JavaScriptBridge.get_interface("window")
+		if is_instance_valid(workshop):
+			# The save state goes out the moment it changes, not with the next position report a frame later:
+			# an autosave can start and reach the browser store within the same frame.
+			workshop.save_status_changed.connect(_publish_save_status)
+			_publish_save_status(workshop.save_status)
 	if "--trace-position" in OS.get_cmdline_user_args():
 		# Test aid: writes the current scene and position to position-trace.txt next to the executable.
 		var dir := OS.get_executable_path().get_base_dir() if OS.has_feature("template") else ProjectSettings.globalize_path("res://")
@@ -162,6 +167,10 @@ func report(scene_name: String, pos: Vector2, facing: String) -> void:
 	_web_window.__trial_facing = facing
 	if is_instance_valid(workshop):
 		_web_window.__trial_save_status = workshop.save_status
+
+func _publish_save_status(status: String) -> void:
+	if _web_window != null:
+		_web_window.__trial_save_status = status
 
 func _reload_world() -> void:
 	workshop.player = null
