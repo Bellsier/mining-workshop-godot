@@ -432,12 +432,11 @@ func _restore(source: Dictionary) -> void:
 	state.merge(source, true)
 	# The original's ticket interval starts again at every page load; it is not carried in the save.
 	state.ticket_elapsed = 0.0
-	# The imported text is the original; its parsed form is rebuilt from it so saving never drifts it.
-	var legacy_source: Variant = source.get("legacy_web_save_source")
-	if legacy_source is String:
-		var reparsed := Save.legacy_payload(legacy_source)
-		if not reparsed.is_empty():
-			state.legacy_web_save = reparsed
+	# An imported web save's parsed copy is rebuilt from its original bytes when it is not stored.
+	if not state.get("legacy_web_save") is Dictionary:
+		var original := Save.legacy_original(state)
+		if original.status == "ok":
+			state.legacy_web_save = original.payload.duplicate(true)
 	var legacy: Dictionary = _dictionary(state.get("legacy_web_save"))
 	var legacy_run := _dictionary(legacy.get("run"))
 	state["village"] = Village.load_progress(source.get("village", legacy_run.get("village")))
@@ -458,10 +457,10 @@ func _restore(source: Dictionary) -> void:
 			var time: Variant = old_queue[id]
 			if (time is float or time is int) and time > 0.0 and _tables.recipes.has(id):
 				state.queue[id] = float(time)
-		state.tickets = int(permanent.get("tickets", 0))
+		state.tickets = _count(permanent.get("tickets"), 0)
 		state.first_ticket = bool(permanent.get("firstGachaGranted", false))
-		state.hq_level = int(run.get("hqLevel", 0))
-		state.craft_facility = int(run.get("craftFacility", 1))
+		state.hq_level = _count(run.get("hqLevel"), 0)
+		state.craft_facility = maxi(1, _count(run.get("craftFacility"), 1))
 		state.facility = _dictionary(run.get("facility"))
 		state.workforce = _dictionary(run.get("workforce"))
 		state.tunnel_open = bool(_dictionary(run.get("world")).get("tunnelUnlocked", false))
@@ -768,12 +767,58 @@ func deliver(id: String) -> bool:
 	_check_first_ticket()
 	return _updated(result.get("message", "납품 완료"))
 
+## Pasted text. A web save's original is kept as the pasted text's UTF-8 bytes: copying through the
+## clipboard or a text field can already have changed it (CRLF line endings, for one). A file import
+## (import_save_bytes) keeps the file's exact bytes.
 func import_save(json_text: String) -> bool:
+	return _import(json_text, PackedByteArray(), "paste")
+
+## A save file's exact bytes (desktop file dialog, or the browser's file picker).
+func import_save_bytes(bytes: PackedByteArray) -> bool:
+	var text := Save.utf8_text(bytes)
+	if text.is_empty():
+		return _reject("저장 파일이 UTF-8 텍스트가 아니에요.")
+	return _import(text, bytes, "file")
+
+## Opens the browser's file picker; the chosen file's bytes are imported unchanged.
+func request_import_file() -> bool:
+	if not OS.has_feature("web") or _web_api == null:
+		return false
+	_web_api.pickFile(_web_callback(_on_import_file))
+	return true
+
+func _on_import_file(args: Array) -> void:
+	var encoded := str(args[0]) if args.size() > 0 else ""
+	if encoded.is_empty():
+		_reject("파일을 가져오지 않았어요.")
+		return
+	import_save_bytes(Marshalls.base64_to_raw(encoded))
+
+## The imported web save's original bytes, exactly as imported, or empty if there is none or it is damaged.
+func legacy_original_bytes() -> PackedByteArray:
+	var original := Save.legacy_original(state)
+	return original.bytes if original.status == "ok" else PackedByteArray()
+
+## "none" | "ok" | "corrupt" | "conflict" | "copy_only" (see Save.legacy_status), with its origin.
+func legacy_original_info() -> Dictionary:
+	var original := Save.legacy_original(state)
+	return {"status": Save.legacy_status(state), "origin": original.origin,
+		"sha256": str(state.get(Save.LEGACY_SHA256, "")), "size": original.bytes.size()}
+
+## Web: downloads the original web save file unchanged.
+func download_legacy_original() -> bool:
+	var bytes := legacy_original_bytes()
+	if bytes.is_empty() or not OS.has_feature("web"):
+		return false
+	JavaScriptBridge.download_buffer(bytes, "mining-workshop-js-original-%s.json" % str(state.get(Save.LEGACY_SHA256, "")).left(12), "application/json")
+	return true
+
+func _import(json_text: String, bytes: PackedByteArray, origin: String) -> bool:
 	if not _web_operation.is_empty():
 		return _reject("저장 확인 중이에요. 잠시 후 다시 시도해 주세요.")
 	var imported := Save.parse_game(json_text)
 	if imported.is_empty():
-		imported = Save.import_legacy(json_text)
+		imported = Save.import_legacy(json_text, bytes, origin)
 	if imported.is_empty() or not _valid_save_state(imported):
 		return _reject("저장 JSON 형식이나 버전을 확인해 주세요.")
 	if is_protected():
@@ -1010,8 +1055,15 @@ func _tick() -> bool:
 	return bool(delivery.get("changed", false)) or mutated
 
 func _valid_save_state(imported: Dictionary) -> bool:
-	if imported.has("legacy_web_save_source") and not imported.legacy_web_save_source is String:
+	for key in [Save.LEGACY_BYTES, Save.LEGACY_SHA256, Save.LEGACY_ORIGIN, Save.LEGACY_TEXT]:
+		if imported.has(key) and not imported[key] is String:
+			return false
+	# NaN and infinity never enter the game (the JSON reader already refuses them in text).
+	if not _finite_numbers(imported, 0):
 		return false
+	for key in ["tickets", "hq_level", "craft_facility"]:
+		if imported.has(key) and not _is_count(imported[key]):
+			return false
 	var legacy: Dictionary = _dictionary(imported.get("legacy_web_save"))
 	var legacy_run: Dictionary = _dictionary(legacy.get("run"))
 	if not imported.has("world") and legacy_run.has("world"):
@@ -1049,6 +1101,29 @@ func _valid_save_state(imported: Dictionary) -> bool:
 	for key in ["craft", "sell_owned", "sell", "target"]:
 		if imported.has("automation") and not imported.automation.get(key) is Dictionary:
 			return false
+	return true
+
+## A whole number 0..2^53 that converts to an int unchanged (int() of 1e300, INF or NaN is INT64_MIN).
+func _is_count(value: Variant) -> bool:
+	return (value is int or value is float) and is_finite(float(value)) and float(value) >= 0.0 \
+		and float(value) <= 9007199254740992.0 and floorf(float(value)) == float(value)
+
+func _count(value: Variant, fallback: int) -> int:
+	return int(value) if _is_count(value) else fallback
+
+func _finite_numbers(value: Variant, depth: int) -> bool:
+	if value is float:
+		return is_finite(value)
+	if depth > 256:
+		return false
+	if value is Dictionary:
+		for key in value:
+			if not _finite_numbers(value[key], depth + 1):
+				return false
+	elif value is Array:
+		for item in value:
+			if not _finite_numbers(item, depth + 1):
+				return false
 	return true
 
 func _valid_worker(worker: Variant) -> bool:
@@ -1130,8 +1205,11 @@ func _valid_world(value: Variant) -> bool:
 		return false
 	for axis in ["x", "y", "level"]:
 		var v: Variant = value.get("base", {}).get(axis, 0)
-		if not (v is int or v is float) or not is_finite(float(v)) or floor(float(v)) != float(v):
+		if not (v is int or v is float) or not is_finite(float(v)) or floor(float(v)) != float(v) or absf(float(v)) > 9007199254740992.0:
 			return false
+	var layout_seed: Variant = value.get("layoutSeed", 0)
+	if not (layout_seed is int or layout_seed is float) or absf(float(layout_seed)) > 9007199254740992.0:
+		return false
 	if not value.get("tunnelUnlocked", false) is bool:
 		return false
 	var ids := {}
@@ -1141,6 +1219,9 @@ func _valid_world(value: Variant) -> bool:
 		for axis in ["x", "y"]:
 			var v: Variant = m.get(axis)
 			if not (v is int or v is float) or not is_finite(float(v)) or floor(float(v)) != float(v) or absf(float(v)) > 32:
+				return false
+		for key in ["grade", "miningPower"]:
+			if m.has(key) and not _is_count(m[key]):
 				return false
 		ids[m.id] = true
 	for id in value.get("hiddenMineIds", []):

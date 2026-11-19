@@ -3,6 +3,7 @@ extends CanvasLayer
 
 enum { TAB_INVENTORY, TAB_CRAFT, TAB_SELL, TAB_WORKERS, TAB_RESEARCH, TAB_DELIVERY, TAB_VILLAGE, TAB_SAVE }
 
+const ExactJson := preload("res://scripts/exact_json.gd")
 const TABS := ["가방", "제작", "판매", "인부", "연구", "납품", "마을", "저장"]
 const PAPER := Color("f5e5ce")
 const MUTED := Color("d3bda0")
@@ -299,8 +300,8 @@ func _refresh(force := false) -> void:
 	if not is_instance_valid(_workshop):
 		return
 	var state: Dictionary = _workshop.call("snapshot")
-	var gold := int(state.get("gold", 0))
-	_gold.text = "%d G" % gold
+	var gold := float(state.get("gold", 0))
+	_gold.text = format_quantity(gold) + " G"
 	_panel_gold.text = _gold.text
 	if not is_workshop_open():
 		return
@@ -362,15 +363,15 @@ func _refresh(force := false) -> void:
 	if is_instance_valid(previous_button) and not previous_button.disabled:
 		previous_button.grab_focus.call_deferred()
 
-func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: int) -> String:
+func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: float) -> String:
 	if _active_tab == TAB_WORKERS:
 		return JSON.stringify([gold, state.get("workers", []), state.get("worker_details", []), state.get("resources", [])])
 	if _active_tab == TAB_DELIVERY:
 		return JSON.stringify([state.get("reputation", 0), state.get("deliveries", state.get("delivery_offers", []))])
 	var visible_quantities := {}
 	for id in inventory:
-		var quantity := floori(float(inventory[id]))
-		if quantity > 0:
+		var quantity := floorf(float(inventory[id]))
+		if quantity > 0.0:
 			visible_quantities[id] = quantity
 	# Inventory and sales show amounts as text, so they redraw when that text changes (0.5 → 0.6).
 	var shown_quantities := {}
@@ -417,7 +418,12 @@ static func format_quantity(value: float) -> String:
 		var scale := 1 << shift
 		var tenths := (int(mantissa) * 10 + scale / 2) / scale
 		return "%d.%d" % [tenths / 10, tenths % 10]
-	var digits := str(int(floorf(value)))
+	var whole := floorf(value)
+	var digits := str(int(whole))
+	if whole >= ExactJson.TWO_53:
+		# Like Intl.NumberFormat: the shortest digits of the double, then zeros (int() would overflow).
+		var shortest := ExactJson.shortest_digits(whole)
+		digits = shortest[0] + "0".repeat(shortest[1])
 	var grouped := ""
 	while digits.length() > 3:
 		grouped = "," + digits.substr(digits.length() - 3) + grouped
@@ -444,7 +450,7 @@ func _render_recipes(recipes: Array, inventory: Dictionary, automation: Dictiona
 			if _workshop.has_method("set_craft_target"):
 				_add_craft_target(actions, id, int(targets.get(id, 0)))
 
-func _render_sales(resources: Array, products: Array, recipes: Array, inventory: Dictionary, automation: Dictionary, gold: int) -> void:
+func _render_sales(resources: Array, products: Array, recipes: Array, inventory: Dictionary, automation: Dictionary, gold: float) -> void:
 	var prices := {}
 	var automatic_costs := {}
 	for item in resources + products + recipes:
@@ -470,7 +476,7 @@ func _render_sales(resources: Array, products: Array, recipes: Array, inventory:
 				buy.disabled = gold < cost
 				actions.add_child(buy)
 
-func _render_workers(workers: Array, assigned: Array, resources: Array, gold: int) -> void:
+func _render_workers(workers: Array, assigned: Array, resources: Array, gold: float) -> void:
 	_rows.add_child(_label("고용 인부 %d명" % assigned.size(), 11))
 	for worker in workers:
 		var id := _item_id(worker)
@@ -510,7 +516,7 @@ func _assign_worker(index: int, worker_id: String, available_resources: PackedSt
 	_workshop.call("assign_worker", worker_id, available_resources[index])
 	_schedule_refresh()
 
-func _render_research(research: Array, completed: Dictionary, inventory: Dictionary, gold: int) -> void:
+func _render_research(research: Array, completed: Dictionary, inventory: Dictionary, gold: float) -> void:
 	for study in research:
 		var id := _item_id(study)
 		var title := str(study.get("name", id))
@@ -531,7 +537,7 @@ func _render_research(research: Array, completed: Dictionary, inventory: Diction
 				break
 		_add_row(title, details, "연구", "unlock", id, ready)
 
-func _render_sites(sites: Array, inventory: Dictionary, gold: int) -> void:
+func _render_sites(sites: Array, inventory: Dictionary, gold: float) -> void:
 	if sites.is_empty() or not _workshop.has_method("open_site"):
 		return
 	_rows.add_child(_label("채굴 지역", 12))
@@ -564,7 +570,7 @@ func _render_deliveries(deliveries: Array, reputation: int) -> void:
 		var company := str(delivery.get("company_name", delivery.get("company_id", "납품")))
 		_add_row(company, description, "납품", "deliver", id, bool(delivery.get("can_complete", false)))
 
-func _render_upgrades(upgrades: Array, inventory: Dictionary, gold: int) -> void:
+func _render_upgrades(upgrades: Array, inventory: Dictionary, gold: float) -> void:
 	if upgrades.is_empty():
 		return
 	_rows.add_child(_label("시설과 인력 강화", 12))
@@ -579,7 +585,7 @@ func _render_upgrades(upgrades: Array, inventory: Dictionary, gold: int) -> void
 		var details := "%d G" % money if needs.is_empty() else _describe_items(needs)
 		_add_row(title, details, "강화", "upgrade", upgrade.id, gold >= money and _has_items(inventory, needs))
 
-func _render_village(village: Dictionary, inventory: Dictionary, gold: int) -> void:
+func _render_village(village: Dictionary, inventory: Dictionary, gold: float) -> void:
 	if village.is_empty():
 		return
 	for facility: Dictionary in village.facilities:
@@ -632,7 +638,75 @@ func _render_save() -> void:
 	if _workshop.has_method("export_save"):
 		actions.add_child(_button("내보내기", _export_save))
 		actions.add_child(_button("텍스트 전체 선택", _select_save_text))
+	if _workshop.has_method("import_save_bytes"):
+		_render_original_controls()
 	_render_save_status()
+
+## File import keeps a web save's exact bytes; pasting may not (see the note shown here).
+func _render_original_controls() -> void:
+	var files := HBoxContainer.new()
+	_rows.add_child(files)
+	files.add_child(_button("파일에서 가져오기", _import_save_file))
+	var info: Dictionary = _workshop.call("legacy_original_info")
+	var export_original := _button("원본 JS 파일 저장", _export_original_file)
+	export_original.disabled = str(info.status) not in ["ok", "conflict"]
+	files.add_child(export_original)
+	var lines: PackedStringArray = ["붙여넣기는 줄바꿈(CRLF)이나 일부 문자가 바뀐 채 들어올 수 있어요. 원본 바이트를 그대로 보존하려면 '파일에서 가져오기'를 쓰세요."]
+	match str(info.status):
+		"ok", "conflict":
+			lines.append("보관 중인 JS 원본: %s · %d바이트 · SHA-256 %s…" % ["파일 그대로" if info.origin == "file" else "붙여넣은 텍스트 기준", int(info.size), str(info.sha256).left(12)])
+			if info.status == "conflict":
+				lines.append("원본과 게임이 쓰는 사본이 달라 사본을 쓰고 있어요. 둘 다 보존합니다.")
+		"corrupt":
+			lines.append("보관 중인 JS 원본이 손상되어 게임은 저장된 사본을 쓰고 있어요. 원본 데이터는 지우지 않고 그대로 둡니다.")
+		"copy_only":
+			lines.append("이전 버전에서 가져온 저장이라 원본 바이트가 없어요. 원본이 필요하면 JS 저장 파일을 다시 가져오세요.")
+	var note := _label("\n".join(lines), 10)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_rows.add_child(note)
+
+func _import_save_file() -> void:
+	if OS.has_feature("web"):
+		if not bool(_workshop.call("request_import_file")):
+			_show_feedback("이 브라우저에서는 파일을 열 수 없어요.")
+		return
+	_file_dialog(FileDialog.FILE_MODE_OPEN_FILE, _on_import_file_chosen)
+
+func _on_import_file_chosen(path: String) -> void:
+	var bytes := FileAccess.get_file_as_bytes(path)
+	if bytes.is_empty():
+		_show_feedback("파일을 읽지 못했어요.")
+		return
+	_workshop.call("import_save_bytes", bytes)
+
+func _export_original_file() -> void:
+	if OS.has_feature("web"):
+		if not bool(_workshop.call("download_legacy_original")):
+			_show_feedback("보관 중인 JS 원본이 없어요.")
+		return
+	_file_dialog(FileDialog.FILE_MODE_SAVE_FILE, _on_original_path_chosen)
+
+func _on_original_path_chosen(path: String) -> void:
+	var bytes: PackedByteArray = _workshop.call("legacy_original_bytes")
+	var file := FileAccess.open(path, FileAccess.WRITE) if not bytes.is_empty() else null
+	if file == null:
+		_show_feedback("JS 원본을 저장하지 못했어요.")
+		return
+	file.store_buffer(bytes)
+	file.close()
+	_show_feedback("JS 원본을 그대로 저장했어요.")
+
+func _file_dialog(mode: FileDialog.FileMode, chosen: Callable) -> void:
+	var dialog := FileDialog.new()
+	dialog.file_mode = mode
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.use_native_dialog = true
+	dialog.filters = PackedStringArray(["*.json ; 저장 JSON", "* ; 모든 파일"])
+	dialog.file_selected.connect(chosen)
+	dialog.file_selected.connect(func(_path: String) -> void: dialog.queue_free())
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	dialog.popup_centered_ratio(0.8)
 
 ## Below the import/export controls: what is guaranteed now, and the recovery actions on offer.
 func _render_save_status() -> void:
@@ -954,7 +1028,7 @@ func _box(fill: Color, border: Color, padding: int) -> StyleBoxFlat:
 		box.set_content_margin(side, padding)
 	return box
 
-func _render_tunnel(tunnel: Dictionary, completed: Dictionary, inventory: Dictionary, gold: int) -> void:
+func _render_tunnel(tunnel: Dictionary, completed: Dictionary, inventory: Dictionary, gold: float) -> void:
 	if tunnel.is_empty():
 		return
 	if tunnel.open:

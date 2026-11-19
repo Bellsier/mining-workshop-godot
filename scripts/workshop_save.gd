@@ -1,11 +1,22 @@
 extends RefCounted
 ## Stores the active Godot game and converts browser save JSON without changing it.
 
+const ExactJson := preload("res://scripts/exact_json.gd")
+
 const SAVE_PATH := "user://workshop_save.json"
 const SAVE_VERSION := 1
 const WEB_SAVE_VERSION := 1
+## The imported web save, byte for byte (base64), its SHA-256 and how it arrived ("file" or "paste").
+const LEGACY_BYTES := "legacy_web_save_bytes"
+const LEGACY_SHA256 := "legacy_web_save_sha256"
+const LEGACY_ORIGIN := "legacy_web_save_origin"
+## Earlier builds of this branch kept the imported text here; it is read and converted to the fields above.
+const LEGACY_TEXT := "legacy_web_save_source"
+const EMPTY_SHA256 := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 static var _save_lock := Mutex.new()
+static var _original_key := ""
+static var _original_result := {}
 
 
 static func has_file() -> bool:
@@ -60,13 +71,13 @@ static func export_game(state: Dictionary) -> String:
 	if state.is_empty() or not _is_json_value(state):
 		return ""
 	var stored := state
-	# Godot writes numbers with 15 significant digits, so a parsed copy of the imported JS save would
-	# drift on every save. With the exact text kept, only the text is written; parse_game rebuilds the copy.
-	var source: Variant = state.get("legacy_web_save_source")
-	if source is String and not source.is_empty() and state.has("legacy_web_save"):
+	# The parsed copy of an imported web save is rebuilt from its original bytes on every read. It is
+	# written out only when it cannot be rebuilt exactly: the original is damaged, or the two disagree.
+	var original := legacy_original(state)
+	if original.status == "ok" and state.get("legacy_web_save") == original.payload:
 		stored = state.duplicate()
 		stored.erase("legacy_web_save")
-	return JSON.stringify({"version": SAVE_VERSION, "state": stored}, "", true, true)
+	return ExactJson.stringify({"version": SAVE_VERSION, "state": stored})
 
 
 static func parse_game(text: String) -> Dictionary:
@@ -76,12 +87,84 @@ static func parse_game(text: String) -> Dictionary:
 	var state: Variant = envelope.get("state")
 	if not state is Dictionary:
 		return {}
-	var source: Variant = state.get("legacy_web_save_source")
-	if source is String:
-		var payload := legacy_payload(source)
-		if not payload.is_empty():
-			state["legacy_web_save"] = payload
+	if state.get(LEGACY_TEXT) is String and not state.has(LEGACY_BYTES):
+		# Lossless: the stored text becomes its UTF-8 bytes. Nothing else changes.
+		var bytes: PackedByteArray = state[LEGACY_TEXT].to_utf8_buffer()
+		state[LEGACY_BYTES] = Marshalls.raw_to_base64(bytes)
+		state[LEGACY_SHA256] = sha256_hex(bytes)
+		state[LEGACY_ORIGIN] = "paste"
+		state.erase(LEGACY_TEXT)
+	var original := legacy_original(state)
+	# A copy stored in the file is kept as it is: it was written because the original could not be trusted.
+	if original.status == "ok" and not state.has("legacy_web_save"):
+		state["legacy_web_save"] = original.payload.duplicate(true)
 	return state
+
+
+## The imported web save's original and whether it can be used:
+## {"status": "none" | "ok" | "corrupt", "bytes": PackedByteArray, "payload": Dictionary, "origin": String,
+##  "reason": String}. "corrupt" = not base64, SHA-256 mismatch, not UTF-8, or not a web save.
+static func legacy_original(state: Dictionary) -> Dictionary:
+	var encoded: Variant = state.get(LEGACY_BYTES)
+	if not encoded is String:
+		return {"status": "none", "bytes": PackedByteArray(), "payload": {}, "origin": "", "reason": ""}
+	var key := "%s|%s|%s" % [str(state.get(LEGACY_SHA256)), str(state.get(LEGACY_ORIGIN)), encoded]
+	if key == _original_key:
+		return _original_result
+	var result := {"status": "corrupt", "bytes": PackedByteArray(), "payload": {}, "origin": str(state.get(LEGACY_ORIGIN, "")), "reason": ""}
+	var bytes := Marshalls.base64_to_raw(encoded) if not encoded.is_empty() else PackedByteArray()
+	if Marshalls.raw_to_base64(bytes) != encoded:
+		result.reason = "base64"
+	elif state.get(LEGACY_SHA256) != sha256_hex(bytes):
+		result.reason = "sha256"
+	else:
+		result.bytes = bytes
+		var text := utf8_text(bytes)
+		var payload := legacy_payload(text) if not text.is_empty() else {}
+		if payload.is_empty():
+			result.reason = "content"
+		else:
+			result.status = "ok"
+			result.payload = payload
+	_original_key = key
+	_original_result = result
+	return result
+
+
+## "none", "ok", "corrupt" (original unusable; the stored copy, if any, is the one in use),
+## "conflict" (original and stored copy differ; the stored copy is in use), or "copy_only" (a save
+## imported before originals were kept).
+static func legacy_status(state: Dictionary) -> String:
+	var original := legacy_original(state)
+	if original.status == "none":
+		return "copy_only" if state.get("legacy_web_save") is Dictionary else "none"
+	if original.status == "corrupt":
+		return "corrupt"
+	if state.has("legacy_web_save") and state.legacy_web_save != original.payload:
+		return "conflict"
+	return "ok"
+
+
+static func sha256_hex(bytes: PackedByteArray) -> String:
+	if bytes.is_empty():
+		return EMPTY_SHA256
+	var context := HashingContext.new()
+	context.start(HashingContext.HASH_SHA256)
+	context.update(bytes)
+	return context.finish().hex_encode()
+
+
+## The text of UTF-8 bytes (a leading byte order mark allowed), or "" if they are not exactly UTF-8 text.
+static func utf8_text(bytes: PackedByteArray) -> String:
+	if bytes.is_empty():
+		return ""
+	var text := bytes.get_string_from_utf8()
+	var encoded := text.to_utf8_buffer()
+	if encoded == bytes:
+		return text
+	if bytes.size() >= 3 and bytes[0] == 0xEF and bytes[1] == 0xBB and bytes[2] == 0xBF and encoded == bytes.slice(3):
+		return text
+	return ""
 
 
 ## The game payload of a web save text (v1 payload, S2 snapshot or snapshot row); {} if it is not one.
@@ -99,10 +182,13 @@ static func legacy_payload(text: String) -> Dictionary:
 
 
 ## Accepts the public web build's v1 payload and an S2 snapshot or snapshot row.
-## Only active economy fields are projected. The original payload remains available for future ports:
-## legacy_web_save_source keeps the imported text exactly (S2 envelope included), because Godot's JSON
-## does not read every number back as the same double; legacy_web_save is parsed from it on every load.
-static func import_legacy(text: String) -> Dictionary:
+## Only active economy fields are projected. The original remains available for future ports: its bytes
+## (S2 envelope included) are kept exactly with their SHA-256, and legacy_web_save is parsed from them.
+## `bytes` are the file's bytes for a file import; pasted text is kept as its UTF-8 bytes, which may
+## already differ from the file it was copied from (line endings, for one).
+static func import_legacy(text: String, bytes := PackedByteArray(), origin := "paste") -> Dictionary:
+	if bytes.is_empty():
+		bytes = text.to_utf8_buffer()
 	var payload := legacy_payload(text)
 	if payload.is_empty():
 		return {}
@@ -127,16 +213,17 @@ static func import_legacy(text: String) -> Dictionary:
 		"inventory": inventory,
 		"completed_research": completed_research,
 		"legacy_web_save": payload,
-		"legacy_web_save_source": text,
+		LEGACY_BYTES: Marshalls.raw_to_base64(bytes),
+		LEGACY_SHA256: sha256_hex(bytes),
+		LEGACY_ORIGIN: origin,
 	}
 
 
 static func _parse_object(text: String) -> Dictionary:
-	var parser := JSON.new()
-	if parser.parse(text) != OK:
+	var parsed := ExactJson.parse(text)
+	if not parsed.ok:
 		return {}
-	var parsed: Variant = parser.data
-	return parsed if parsed is Dictionary else {}
+	return parsed.value if parsed.value is Dictionary else {}
 
 
 static func _load_game(path: String) -> Dictionary:

@@ -4,6 +4,7 @@
 // IndexedDB requests slow or fail; they never edit save data. Fixture data is written from an isolated
 // page while the game is not running.
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const { createServer } = require('node:http');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -110,6 +111,13 @@ const pos = page => page.evaluate(() => ({ x: __trial_x, y: __trial_y, scene: __
 const iron = record => record.state.inventory.iron || 0;
 const inject = (page, config) => page.evaluate(value => Object.assign(window.qaWrites, value), config);
 const count = (page, key) => page.evaluate(key => window.qaWrites[key], key);
+const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+// The imported web save's original is kept as base64 bytes with their SHA-256 (no parsed copy is stored).
+const keptBytes = state => Buffer.from(state.legacy_web_save_bytes, 'base64');
+const keptPayload = state => {
+  const kept = JSON.parse(keptBytes(state).toString('utf8'));
+  return kept.snapshot ? kept.snapshot.payload : kept;
+};
 const learnUserDir = page => page.evaluate(() => window.miningWorkshopSave?.state?.legacyKeys?.[0]);
 
 async function prepare(page, origin) {
@@ -439,12 +447,10 @@ async function s2Import({ page, baseline, note, shot }) {
   const imported = await store.read(page);
   assert.equal(imported.state.gold, 37);
   assert.equal(iron(imported), 7);
-  // The JS original is stored as the exact imported text (Godot would round a parsed copy's numbers).
-  const keptPayload = state => {
-    const kept = JSON.parse(state.legacy_web_save_source);
-    return kept.snapshot ? kept.snapshot.payload : kept;
-  };
-  assert.equal(imported.state.legacy_web_save_source, json);
+  // Pasted text is kept as the text received, with its SHA-256.
+  assert.equal(keptBytes(imported.state).toString('utf8'), json);
+  assert.equal(imported.state.legacy_web_save_sha256, sha256(Buffer.from(json)));
+  assert.equal(imported.state.legacy_web_save_origin, 'paste');
   assert.deepEqual(keptPayload(imported.state), legacy);
   // The replaced save is kept under its own key in the same transaction.
   const before = await store.raw(page, 'get', 'slot:main:before-import');
@@ -468,9 +474,48 @@ async function s2Import({ page, baseline, note, shot }) {
   assert.equal((await pos(page)).x, 128);
   // The JS original stays as imported after autosave and reload.
   const reloaded = (await store.read(page)).state;
-  assert.equal(reloaded.legacy_web_save_source, json, 'the imported text is kept exactly');
+  assert.equal(keptBytes(reloaded).toString('utf8'), json, 'the imported text is kept exactly');
   assert.deepEqual(keptPayload(reloaded), legacy);
   note({ failedImportPreserved: true, s2ImportedAfterCommit: true, replacedSaveBackedUp: true });
+}
+
+// A JS/S2 save file chosen in the browser's file picker keeps its exact bytes (CRLF, Korean, emoji).
+async function fileImport({ page, note, shot }) {
+  const fixture = await fs.readFile(path.join(__dirname, '..', 'fixtures', 'js_save_s2_crlf_utf8.json'));
+  const expected = sha256(fixture);
+  assert.ok(fixture.includes(Buffer.from('\r\n')) && fixture.toString('utf8').includes('😀'), 'fixture has CRLF and emoji');
+  await page.keyboard.press('i');
+  await delay(250);
+  await page.mouse.click(700, 118);
+  await delay(400);
+  await shot('save-tab');
+  // The file button sits on the row below the paste controls; its exact height depends on font metrics.
+  let chooser = null;
+  for (const y of [448, 440, 456, 432, 464, 424, 472]) {
+    const opened = page.waitForEvent('filechooser', { timeout: 2500 }).catch(() => null);
+    await page.mouse.click(70, y);
+    chooser = await opened;
+    if (chooser) { note({ fileButtonAt: [70, y] }); break; }
+  }
+  if (!chooser) assert.fail('The file import button did not open the browser file picker');
+  await chooser.setFiles({ name: 'js-save.json', mimeType: 'application/json', buffer: fixture });
+  const deadline = Date.now() + 20000;
+  let record;
+  while ((record = await store.read(page))?.state?.legacy_web_save_sha256 !== expected) {
+    assert.ok(Date.now() < deadline, 'the file import was saved');
+    await delay(250);
+  }
+  await waitSaved(page);
+  await shot('file-imported');
+  assert.equal(sha256(keptBytes(record.state)), expected, 'stored bytes equal the file');
+  assert.equal(record.state.legacy_web_save_origin, 'file');
+  assert.ok(!('legacy_web_save' in record.state), 'no rounded parsed copy is stored');
+  assert.equal(keptPayload(record.state).run.resources.iron, 1.1500000000000001);
+  await page.reload();
+  await waitSaved(page);
+  const reloaded = (await store.read(page)).state;
+  assert.equal(sha256(keptBytes(reloaded)), expected, 'stored bytes equal the file after a reload');
+  note({ fileImportSha256: expected, bytes: fixture.length, keptAfterReload: true });
 }
 
 async function main() {
@@ -497,6 +542,7 @@ async function main() {
     await runCase(browser, origin, ['legacy-migration', legacyMigration], false, false);
     await runCase(browser, origin, ['folder-key-migration', folderKeyMigration], false, false);
     await runCase(browser, origin, ['s2-import', s2Import]);
+    await runCase(browser, origin, ['file-import', fileImport]);
     await runCase(browser, origin, ['timeout-recovery', timeoutRecovery]);
     await runCase(browser, origin, ['basic-durability', unverifiedDurability]);
     await runCase(browser, origin, ['quota-refusal', quotaRefusal]);

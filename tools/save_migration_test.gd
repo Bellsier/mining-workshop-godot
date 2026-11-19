@@ -41,9 +41,11 @@ func _test_legacy_import() -> void:
 	_check(legacy_run.has("unmapped_progress"), "unmapped progress is retained")
 	var snapshot := {"format": 1, "payload": payload}
 	var from_row := Save.import_legacy(JSON.stringify({"snapshot": snapshot}))
-	from_row.erase("legacy_web_save_source")
 	var from_payload := state.duplicate()
-	from_payload.erase("legacy_web_save_source")
+	# The kept original differs (an S2 row vs. its payload); everything taken from it is the same.
+	for key in [Save.LEGACY_BYTES, Save.LEGACY_SHA256, Save.LEGACY_ORIGIN]:
+		from_row.erase(key)
+		from_payload.erase(key)
 	_check(from_row == from_payload, "S2 row import")
 	_check(Save.import_legacy('{"saveVersion": 2, "run": {}}').is_empty(), "future legacy version is rejected")
 	_check(Save.import_legacy('{"saveVersion": "1", "run": {}}').is_empty(), "invalid legacy version is rejected")

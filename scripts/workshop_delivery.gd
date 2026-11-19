@@ -229,10 +229,12 @@ static func _next_order(data: Dictionary, state: Dictionary, company: Dictionary
 		return _fixed_order(fixed, order_index)
 	if fixed.is_empty() or (order_index < fixed.size() and (open.is_empty() or order_index < 1)):
 		return {}
+	# Original repeatCandidates: favorite recipes whose raw resources are all in unlocked areas.
+	# Stock does not count: a material from a locked area in the bag does not open a repeat order.
 	var candidates: Array[String] = []
-	var inventory: Dictionary = state.get("inventory", {})
 	for product: String in company.get("favorites", []):
-		if _can_source(data, state, inventory, product, []):
+		var recipe := _recipe(data, product)
+		if not recipe.is_empty() and not _needs_locked_resource(data, state, recipe, []):
 			candidates.append(product)
 	if candidates.is_empty():
 		return {}
@@ -250,23 +252,28 @@ static func _next_order(data: Dictionary, state: Dictionary, company: Dictionary
 	return {"product": product, "qty": qty, "index": -1}
 
 
-static func _can_source(data: Dictionary, state: Dictionary, inventory: Dictionary, product: String, chain: Array) -> bool:
-	if chain.has(product):
-		return false
-	var recipe := _recipe(data, product)
-	if recipe.is_empty():
-		var unlocked := _as_dictionary(state.get("unlocked_sites", state.get("unlockedSites")))
-		for resource: Dictionary in data.get("resources", []):
-			if resource.get("key") == product:
-				var site := String(resource.get("site", ""))
-				return bool(unlocked.get(site, false)) or float(inventory.get(product, 0)) > 0.0
-		return false
-	var ingredients: Dictionary = recipe.get("need", {})
-	var next_chain := chain + [product]
-	for ingredient: String in ingredients:
-		if not _can_source(data, state, inventory, ingredient, next_chain):
-			return false
-	return true
+## recipeNeedsLockedResource: any raw resource under the recipe (sub-recipes followed once each,
+## unknown keys ignored) whose site is not unlocked.
+static func _needs_locked_resource(data: Dictionary, state: Dictionary, recipe: Dictionary, seen: Array) -> bool:
+	var unlocked := _as_dictionary(state.get("unlocked_sites", state.get("unlockedSites")))
+	for ingredient: String in _as_dictionary(recipe.get("need")):
+		var resource := _resource(data, ingredient)
+		if not resource.is_empty():
+			if not bool(unlocked.get(String(resource.get("site", "")), false)):
+				return true
+			continue
+		var sub := _recipe(data, ingredient)
+		if not sub.is_empty() and not seen.has(ingredient):
+			if _needs_locked_resource(data, state, sub, seen + [ingredient]):
+				return true
+	return false
+
+
+static func _resource(data: Dictionary, id: String) -> Dictionary:
+	for resource: Dictionary in data.get("resources", []):
+		if resource.get("key") == id:
+			return resource
+	return {}
 
 
 static func _regular_trade(data: Dictionary, state: Dictionary, company: Dictionary, progress: Dictionary, delta: float, economy_multiplier: float) -> String:
@@ -370,7 +377,8 @@ static func _nonnegative(value: Variant) -> float:
 	if not value is float and not value is int:
 		return 0.0
 	var number := float(value)
-	return maxf(0.0, number) if is_finite(number) else 0.0
+	# Kept below 2^53 so the int() conversions of counts stay exact (int() of 1e300 is INT64_MIN).
+	return clampf(number, 0.0, 9007199254740992.0) if is_finite(number) else 0.0
 
 
 static func _result(ok: bool, message: String) -> Dictionary:

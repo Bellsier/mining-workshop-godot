@@ -59,6 +59,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/parity-fixes"
           MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/parity-fixes" godot --headless --path . --script res://tools/parity_fixes_test.gd 2>&1 | tee "$RUNNER_TEMP/parity-fixes.log"
           grep -F 'PARITY FIXES PASS' "$RUNNER_TEMP/parity-fixes.log"
+      - name: Save integrity (exact numbers, original bytes, damaged originals, abnormal numbers)
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/save-integrity"
+          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/save-integrity" godot --headless --path . --script res://tools/save_integrity_test.gd 2>&1 | tee "$RUNNER_TEMP/save-integrity.log"
+          grep -F 'SAVE INTEGRITY PASS' "$RUNNER_TEMP/save-integrity.log"
       - name: Failed import preserves world and protected save
         shell: bash
         run: |

@@ -254,6 +254,35 @@
       addEventListener("pagehide", () => callback());
     },
 
+    /* Lets the player choose a save file. callback(base64) with the file's exact bytes, or ("") when
+     * nothing was chosen or the file could not be read. The bytes are never decoded here. */
+    pickFile(callback) {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".json,application/json,text/plain";
+      input.style.display = "none";
+      document.body.appendChild(input);
+      let answered = false;
+      const answer = encoded => {
+        if (answered) return;
+        answered = true;
+        input.remove();
+        callback(encoded);
+      };
+      input.addEventListener("cancel", () => answer(""));
+      input.addEventListener("change", () => {
+        const file = input.files && input.files[0];
+        if (!file) { answer(""); return; }
+        file.arrayBuffer().then(buffer => {
+          const bytes = new Uint8Array(buffer);
+          let binary = "";
+          for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+          answer(btoa(binary));
+        }).catch(() => answer(""));
+      });
+      input.click();
+    },
+
     /* callback(persisted, requested): ask the browser not to evict this site's storage. */
     persist(request, callback) {
       const storage = globalThis.navigator?.storage;

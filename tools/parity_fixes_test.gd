@@ -3,6 +3,7 @@ extends SceneTree
 ##   MINING_QA_ISOLATED=1 XDG_DATA_HOME=<empty temp dir> godot --headless --path . --script res://tools/parity_fixes_test.gd
 ## 1. Ticket trickle: 45 s interval from start, nothing before the first-ticket milestone (systems.js ticketTrickle).
 ## 2. The imported JS save (legacy_web_save) survives import, autosave, reload and re-export unchanged.
+## 3. Repeat orders only ask for products whose raw resources are all in unlocked areas (repeatCandidates).
 ## 4. Auto-sell skips only workshopOnly recipes and really moves stock into gold (systems.js tickAutoSell).
 ## 5. A new order restarts the order timer at 0; overflow is not carried (delivery.js tickOrders).
 ## 6. Fractional stock such as 0.5 iron stays visible, formatted like the original's fmt().
@@ -12,6 +13,7 @@ const Workshop = preload("res://scripts/workshop.gd")
 const Save = preload("res://scripts/workshop_save.gd")
 const Delivery = preload("res://scripts/workshop_delivery.gd")
 const Hud = preload("res://scripts/workshop_hud.gd")
+const ExactJson = preload("res://scripts/exact_json.gd")
 const FIXTURE := "res://tests/fixtures/js_save_v1_full_world.json"
 
 var _failures: Array[String] = []
@@ -36,6 +38,7 @@ func _run() -> void:
 	_ticket_trickle()
 	_auto_sell()
 	_order_timer()
+	_repeat_orders_skip_locked_areas()
 	_quantity_format()
 	await _fractional_stock_is_shown()
 	_legacy_save_is_kept()
@@ -185,6 +188,71 @@ func _order_timer() -> void:
 	game.queue_free()
 
 
+func _raw_resources(data: Dictionary, product: String, seen: Array) -> Array:
+	var raws := []
+	var recipe: Dictionary = {}
+	for row: Dictionary in data.recipes:
+		if row.key == product:
+			recipe = row
+	for ingredient: String in recipe.get("need", {}):
+		var is_resource := false
+		for resource: Dictionary in data.resources:
+			is_resource = is_resource or resource.key == ingredient
+		if is_resource:
+			raws.append(ingredient)
+		elif not seen.has(ingredient):
+			raws.append_array(_raw_resources(data, ingredient, seen + [ingredient]))
+	return raws
+
+
+func _repeat_orders_skip_locked_areas() -> void:
+	var game := _game()
+	var data: Dictionary = game.data
+	var state: Dictionary = game.state
+	state.completed_research["deliveryContract"] = true
+	# Every locked-area material in stock: it must not make its products eligible.
+	for resource: Dictionary in data.resources:
+		state.inventory[resource.key] = 999.0
+	var site_of := {}
+	for resource: Dictionary in data.resources:
+		site_of[resource.key] = resource.site
+	var locked_seen := 0
+	var issued := {}
+	for company: Dictionary in data.companies:
+		var fixed: Array = company.orders
+		var progress := {"orderIndex": fixed.size(), "open": [], "lastRepeat": null, "repeatDone": 0}
+		var allowed := []
+		for product: String in company.favorites:
+			var locked := false
+			for raw: String in _raw_resources(data, product, []):
+				locked = locked or not bool(state.unlocked_sites.get(site_of[raw], false))
+			if locked:
+				locked_seen += 1
+			else:
+				allowed.append(product)
+		for attempt in 60:
+			var order: Dictionary = Delivery._next_order(data, state, company, progress)
+			if order.is_empty():
+				_check(allowed.is_empty(), "%s: a repeat order exists while allowed products remain" % company.key)
+				break
+			issued[order.product] = true
+			_check(allowed.has(order.product), "%s: repeat order for %s needs a locked area (allowed: %s)" % [company.key, order.product, allowed])
+			progress.lastRepeat = order.product
+	_check(locked_seen > 0, "the check covers favorites from locked areas")
+	_check(not issued.is_empty(), "products from unlocked areas still get repeat orders")
+	# Opening the area makes them eligible again.
+	for site: String in site_of.values():
+		state.unlocked_sites[site] = true
+	var lab: Dictionary = data.companies[2]
+	var opened := {}
+	var lab_progress := {"orderIndex": lab.orders.size(), "open": [], "lastRepeat": null, "repeatDone": 0}
+	for attempt in 300:
+		var order: Dictionary = Delivery._next_order(data, state, lab, lab_progress)
+		opened[order.get("product", "")] = true
+	_check(opened.size() == lab.favorites.size(), "with every area open all favorites can be ordered (%s of %s)" % [opened.size(), lab.favorites.size()])
+	game.queue_free()
+
+
 func _quantity_format() -> void:
 	# Expected strings come from the original fmt() run in Node (Intl ko-KR).
 	# Values are built by division (correctly rounded, the same doubles as the JS literals): a GDScript
@@ -290,19 +358,21 @@ func _same(a: Variant, b: Variant) -> bool:
 
 func _legacy_save_is_kept() -> void:
 	var text := FileAccess.get_file_as_string(FIXTURE)
-	var original: Dictionary = JSON.parse_string(text)
+	var bytes := FileAccess.get_file_as_bytes(FIXTURE)
+	var sha := Save.sha256_hex(bytes)
+	var original: Dictionary = ExactJson.parse(text).value
 	_check(original.run.world.workshops.size() == 2 and original.run.world.torches.size() == 2
 		and original.run.village.decor.size() == 3 and original.run.world.tunnelContract.durationSec == 600,
 		"the fixture carries workshops, torches, decorations and a tunnel job")
 	# Import on a desktop build writes the save file at once.
 	var game := _game(true)
-	_check(game.import_save(text), "the JS save imports")
+	_check(game.import_save_bytes(bytes), "the JS save file imports")
 	_kept(game.state.legacy_web_save, original, "legacy_web_save equals the JS save after import")
-	_check(game.state.get("legacy_web_save_source") == text, "the imported JS text is kept byte for byte")
+	_check(game.legacy_original_bytes() == bytes and game.state.get(Save.LEGACY_SHA256) == sha, "the imported JS file is kept byte for byte")
 	_kept(Save.load_game().get("legacy_web_save"), original, "legacy_web_save equals the JS save in the written file")
-	var file_state: Dictionary = JSON.parse_string(Save.read_raw()).state
-	_check(file_state.get("legacy_web_save_source") == text and not file_state.has("legacy_web_save"),
-		"the file stores the exact JS text, not a rounded parsed copy")
+	var file_state: Dictionary = ExactJson.parse(Save.read_raw()).value.state
+	_check(file_state.get(Save.LEGACY_SHA256) == sha and not file_state.has("legacy_web_save"),
+		"the file stores the exact JS bytes, not a parsed copy")
 	# Play, autosave, and play again: the original payload is data, never rewritten by the game.
 	game.mine("iron")
 	game.state.gold = float(game.state.gold) + 5.0
@@ -323,21 +393,14 @@ func _legacy_save_is_kept() -> void:
 	reloaded.queue_free()
 	var again := _game(true)
 	_kept(again.state.legacy_web_save, original, "legacy_web_save is unchanged after a second reload")
-	_check(again.state.get("legacy_web_save_source") == text, "the JS text is byte for byte the same after saves and reloads")
+	_check(Save.sha256_hex(again.legacy_original_bytes()) == sha, "the JS file is byte for byte the same after saves and reloads")
 	again.queue_free()
-	# An S2 auto-save row around the same JSON text (the payload is not re-serialized by Godot here).
+	# An S2 auto-save row around the same JSON text keeps its envelope as part of the original.
 	var row := '{"id":"11111111-2222-4333-8444-555555555555","revision":3,"snapshot":{"format":1,' \
 		+ '"id":"66666666-7777-4888-9999-000000000000","villageId":"11111111-2222-4333-8444-555555555555",' \
-		+ '"name":"시험 마을","savedAt":%s,"payload":%s}}' % [JSON.stringify(original.savedAt), text]
+		+ '"name":"시험 마을","savedAt":%s,"payload":%s}}' % [ExactJson.number_text(original.savedAt), text]
 	var s2 := _game()
 	_check(s2.import_save(row), "an S2 row imports")
 	_kept(s2.state.legacy_web_save, original, "an S2 row keeps the game payload")
-	_check(s2.state.get("legacy_web_save_source") == row, "an S2 row keeps its envelope (villageId, snapshot id, name, revision) as text")
+	_check(s2.legacy_original_bytes() == row.to_utf8_buffer(), "an S2 row keeps its envelope (villageId, snapshot id, name, revision)")
 	s2.queue_free()
-	# Godot 4.4.1's JSON does not read every number back as the same double. That is why the original
-	# is kept as text. Recorded here so a later engine change shows up in the log.
-	for number: float in [1.0 / 10.0 + 2.0 / 10.0, 142875.0 / 1000.0, 1792000000000.0, 115.0 / 100.0, 1.0 / 3.0]:
-		var stored := JSON.stringify([number], "", true, true)
-		var back: float = float(JSON.parse_string(stored)[0])
-		if back != number:
-			print("NOTE engine JSON number round trip is lossy: %s read back %s off by %s" % [stored, var_to_str(back), var_to_str(back - number)])
