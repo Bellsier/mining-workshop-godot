@@ -17,7 +17,7 @@ const report = { status: 'RUNNING', engines: {}, cases: [] };
 async function serve() {
   const server = createServer((req, res) => {
     res.setHeader('Content-Type', 'text/html');
-    res.end('<!doctype html><title>save unit</title>');
+    res.end('<!doctype html><title>save unit</title><link rel="icon" href="data:,">');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return { server, origin: 'http://127.0.0.1:' + server.address().port };

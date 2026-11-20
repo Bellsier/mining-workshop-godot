@@ -41,7 +41,7 @@ async function serve() {
   const mime = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.png': 'image/png' };
   const server = createServer(async (req, res) => {
     const route = new URL(req.url, 'http://127.0.0.1').pathname;
-    if (route === fixture) { res.setHeader('Content-Type', 'text/html'); return res.end('<!doctype html><title>QA</title>'); }
+    if (route === fixture) { res.setHeader('Content-Type', 'text/html'); return res.end('<!doctype html><title>QA</title><link rel="icon" href="data:,">'); }
     const file = path.resolve(root, '.' + (route === '/' ? '/index.html' : route));
     if (!file.startsWith(root + path.sep)) { res.writeHead(404); return res.end(); }
     try {
