@@ -10,7 +10,8 @@ extends SceneTree
 ##   - Enter, then 자유 납품; Tab to the button, then Enter: 5 shipped each time, the button keeps the focus;
 ##   - 5 typed on product A, product B picked: still 5, and 5 of B are shipped;
 ##   - "abc", "", "0" and "-3" ship nothing (the field shows the number it would become); more than in stock ships
-##     nothing; a double click ships once.
+##     nothing; two presses in one frame ship once; quick repeats by mouse, finger and Enter each ship; stock gone
+##     between the press and the shipment ships nothing.
 ## 판매 · 연구 · 마을 · held presses (QA-05)
 ##   - 전량 판매, 터널 굴착 연구 and 잔해 치우기 held 100, 300 and 500 ms while gold and stock change: each acts
 ##     exactly once on release;
@@ -19,6 +20,10 @@ extends SceneTree
 ## Kept as before
 ##   - a worker's picker list stays open while the game redraws the menu, and picking moves the worker (and a save
 ##     keeps it); the save tab's pasted draft survives redraws and a trip to another tab.
+## Save tab after an import
+##   - a failed import leaves the draft as it was, unmarked;
+##   - after a successful file import the draft (an earlier export) stays, marked as not the game's save; 가져오기
+##     with it asks first and imports on the second press; editing it drops the mark and keeps the focus.
 ## Swipes (QA-04, phone screen 568×320)
 ##   - a finger moved over a card's text, a button or a picker scrolls the list and presses nothing, opens nothing;
 ##   - a tap on a button acts once, a tap on a picker opens its list; the scroll bar still drags; a mouse drag
@@ -185,6 +190,7 @@ func _run() -> void:
 	await _free_delivery()
 	await _held_presses()
 	await _kept_features()
+	await _save_tab_import()
 	await _swipes()
 	if _failures.is_empty():
 		print("HUD INPUT PASS")
@@ -230,7 +236,7 @@ func _ship_case(label: String, product: String, qty: int, send: Callable) -> voi
 	_check(is_equal_approx(gold_before - float(eco.state.gold), float(preview.cost)),
 		"%s: the shipping cost is the preview's %s (gold %s → %s)" % [label, preview.cost, gold_before, eco.state.gold])
 	_check(is_equal_approx(_score() - score_before, float(preview.score)), "%s: the score is the preview's %s (got %s)" % [label, preview.score, _score() - score_before])
-	await _wait_ms(450) # past the double-press guard
+	await _frames(3)
 
 
 func _free_delivery() -> void:
@@ -304,7 +310,7 @@ func _free_delivery() -> void:
 		field = _node("ship_qty:" + _company)
 		_check(_sent(b) == sent_a, "\"%s\" ships nothing" % typed)
 		_check(field.text.is_valid_int() and int(field.text) >= 1, "\"%s\" becomes a number to confirm (field %s)" % [typed, field.text])
-		await _wait_ms(450)
+		await _frames(3)
 	await _type_qty("999")
 	await _frames(3)
 	send = _node("ship_send:" + _company)
@@ -313,15 +319,38 @@ func _free_delivery() -> void:
 	_click(_center(send))
 	await _frames(3)
 	_check(_sent(b) == sent_b, "more than in stock ships nothing")
-	# A double click ships once
+	# Two presses in the same frame (one input delivered twice) ship once
 	await _type_qty("2")
 	sent_b = _sent(b)
 	send = _node("ship_send:" + _company)
 	_click(_center(send))
 	_click(_center(send))
+	await _frames(4)
+	_check(_sent(b) == sent_b + 2, "two presses in one frame ship once (sent %s → %s)" % [sent_b, _sent(b)])
+	# Quick repeats by the player (about 120 ms apart) each ship: mouse, finger, Enter on the focused button
+	for way in ["mouse", "touch", "enter"]:
+		sent_b = _sent(b)
+		send = _node("ship_send:" + _company)
+		for k in 2:
+			match way:
+				"mouse": _click(_center(send))
+				"touch": await _tap(_center(send))
+				"enter":
+					send.grab_focus()
+					_key(KEY_ENTER)
+			await _wait_ms(120)
+		await _frames(3)
+		_check(_sent(b) == sent_b + 4, "two quick presses (%s) ship twice (sent %s → %s)" % [way, sent_b, _sent(b)])
+	# Stock gone between the press and the shipment: nothing is shipped
+	sent_b = _sent(b)
+	var stock_b := float(eco.state.inventory.get(b, 0))
+	_click(_center(_node("ship_send:" + _company)))
+	eco.state.inventory[b] = 1.0 # sold or used before the shipment runs (it runs on the next frame)
+	await _frames(4)
+	_check(_sent(b) == sent_b and float(eco.state.inventory.get(b, 0)) == 1.0, "stock gone between the press and the shipment: nothing shipped")
+	eco.state.inventory[b] = stock_b
+	eco.changed.emit()
 	await _frames(3)
-	_check(_sent(b) == sent_b + 2, "a double click ships once (sent %s → %s)" % [sent_b, _sent(b)])
-	await _wait_ms(450)
 
 
 func _preview_text() -> String:
@@ -596,6 +625,66 @@ func _acted() -> String:
 			goods[id] = eco.state.inventory[id]
 	return JSON.stringify([eco.state.gold, eco.state.automation, eco.world.workshops, eco.state.completed_research,
 		eco.state.get("hq_level"), eco.state.get("facility"), eco.state.get("workforce"), eco.state.get("craft_facility"), goods, eco.state.get("queue")])
+
+
+func _button_text(text: String) -> Button:
+	for c in hud._rows.find_children("*", "Button", true, false):
+		if c.text == text and c.is_visible_in_tree():
+			return c
+	return null
+
+
+func _stale_note() -> bool:
+	var note: Control = hud._buttons_by_id.get("save_draft_stale")
+	return is_instance_valid(note) and note.is_visible_in_tree()
+
+
+func _save_tab_import() -> void:
+	_churn = false
+	hud.open_tab("save")
+	await _frames(4)
+	_click(_center(_button_text("내보내기")))
+	await _frames(3)
+	var exported: String = hud._save_input.text
+	var gold_then := float(eco.state.gold)
+	_check(Save.parse_game(exported).get("gold") == gold_then, "내보내기 puts the current save in the field")
+	# a failed import: the draft stays, unmarked
+	eco.import_save_bytes("not a save".to_utf8_buffer())
+	await _frames(3)
+	_check(hud._save_input.text == exported and not _stale_note(), "a failed import leaves the draft as it was, unmarked")
+	# a successful file import of another save
+	var other: Dictionary = Save.parse_game(exported)
+	other.gold = 7.0
+	_check(eco.import_save_bytes(Save.export_game(other).to_utf8_buffer()), "another save is imported from a file")
+	await _frames(6)
+	hud.open_tab("save") # the world reloads after an import and the menu closes: the player opens the tab again
+	await _frames(4)
+	_check(float(eco.state.gold) == 7.0, "the imported save is the game now")
+	_check(hud._save_input.text == exported, "the earlier export stays in the field (the player may want to keep it)")
+	_check(_stale_note(), "the field is marked as not the game's save")
+	# 가져오기 with that draft: asks first
+	_click(_center(_button_text("가져오기")))
+	await _frames(3)
+	_check(float(eco.state.gold) == 7.0, "the first 가져오기 with the marked draft imports nothing")
+	_check(str(hud._panel_note.text).contains("한 번 더"), "it says to press again (%s)" % hud._panel_note.text)
+	_click(_center(_button_text("가져오기")))
+	await _frames(4)
+	_check(float(eco.state.gold) == gold_then, "the second 가져오기 imports it (gold %s)" % eco.state.gold)
+	await _frames(6)
+	hud.open_tab("save")
+	await _frames(4)
+	# after that import the field (its source) is marked again; editing it drops the mark, keeping the focus
+	_check(_stale_note(), "after importing it, the field is marked again")
+	var field: TextEdit = hud._save_input
+	_click(_center(field))
+	await _frames(2)
+	_key(KEY_END)
+	_type(" ")
+	await _frames(3)
+	_check(not _stale_note() and hud._save_input == field and field.has_focus(), "editing drops the mark; the field keeps the focus")
+	hud.close_workshop()
+	await _frames(2)
+	_churn = true
 
 
 func _first_enabled_button(method := "") -> Button:
