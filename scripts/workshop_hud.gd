@@ -48,6 +48,19 @@ var _render_key := ""
 var _rendered_tab := -1
 ## Where the pointer (mouse or finger) last was, in this layer's coordinates: the row under it is kept in place.
 var _pointer := Vector2(-INF, -INF)
+## A press is held on the open menu: a redraw then only updates values in place, so the pressed control stays.
+var _pointer_down := false
+## A swipe on the list: {from, scroll, active}. It scrolls the list once the finger moved DRAG_START.
+var _drag := {}
+## How far (canvas pixels) a press must move before it is a swipe rather than a tap.
+const DRAG_START := 8.0
+var _cancelling_press := false
+## A redraw left rows as they were (a press, an open popup or a field being typed in was in the way): redraw again
+## once that is over.
+var _stale_rows := false
+## What redraws did, for tests and measurements: full (the list built anew), patched (rows kept, values updated),
+## added / removed (rows put in or taken out of the list).
+var redraw_stats := {"redraws": 0, "full": 0, "patched": 0, "added": 0, "removed": 0}
 var _worker_pickers: Array[OptionButton] = []
 var _recovery: ColorRect
 var _recovery_title: Label
@@ -94,6 +107,49 @@ func _ready() -> void:
 	set_action(_action_label, _action_callback)
 	set_context_hint(_context_hint_text)
 	_refresh()
+	if OS.has_feature("web"):
+		_qa_callback = JavaScriptBridge.create_callback(_qa_hook)
+		JavaScriptBridge.get_interface("window").__trial_hud = _qa_callback
+
+## Test aid for browser QA, like window.__trial_*: window.__trial_hud(command, argument) answers in
+## window.__trial_hud_out (JSON). It only reports, except "open", which opens a tab of the menu.
+##   "controls": the menu's controls with an id, tabs and the close button: {id, kind, text, disabled, popup,
+##               rect [x, y, w, h] in window pixels, and for a picker with its list open, list {rect, items}};
+##   "view":     {scroll, max, rect} of the list;  "open": opens the tab named by the argument.
+var _qa_callback: JavaScriptObject
+
+func _qa_hook(args: Array) -> void:
+	var command := str(args[0]) if args.size() > 0 else ""
+	var out: Variant = null
+	var to_window := get_viewport().get_final_transform()
+	var rect_of := func(c: Control) -> Array:
+		var r: Rect2 = to_window * c.get_global_rect()
+		return [r.position.x, r.position.y, r.size.x, r.size.y]
+	match command:
+		"open":
+			open_tab(str(args[1]) if args.size() > 1 else "")
+			out = is_workshop_open()
+		"controls":
+			var list: Array = []
+			for id: String in _buttons_by_id:
+				var c: Control = _buttons_by_id[id]
+				if is_instance_valid(c) and c.is_visible_in_tree():
+					var entry := {"id": id, "kind": c.get_class(), "text": str(c.get("text")) if c.get("text") != null else "",
+						"disabled": bool(c.get("disabled")) if c is BaseButton else false,
+						"popup": c.get_popup().visible if c is OptionButton else false, "rect": rect_of.call(c)}
+					if c is OptionButton and c.get_popup().visible:
+						var popup: PopupMenu = c.get_popup()
+						var area: Rect2 = to_window * Rect2(Vector2(popup.position), Vector2(popup.size))
+						entry.list = {"rect": [area.position.x, area.position.y, area.size.x, area.size.y], "items": popup.item_count}
+					list.append(entry)
+			for i in _tab_buttons.size():
+				if _tab_buttons[i].is_visible_in_tree():
+					list.append({"id": "tab:" + TABS[i], "kind": "Button", "text": TABS[i], "disabled": false, "popup": false, "rect": rect_of.call(_tab_buttons[i])})
+			out = list
+		"view":
+			out = {"scroll": _scroll.scroll_vertical, "max": _scroll.get_v_scroll_bar().max_value - _scroll.get_v_scroll_bar().page,
+				"rect": rect_of.call(_scroll), "redraws": redraw_stats}
+	JavaScriptBridge.get_interface("window").__trial_hud_out = JSON.stringify(out)
 
 func open_workshop() -> void:
 	_open(false)
@@ -368,15 +424,10 @@ func _refresh(force := false) -> void:
 	if _active_tab == TAB_SAVE and is_instance_valid(_save_input):
 		return
 	var focused := get_viewport().gui_get_focus_owner()
-	if not force and focused is LineEdit and focused.has_meta("craft_target"):
-		return
-	if not force:
-		if _active_tab in [TAB_WORKERS, TAB_CRAFT, TAB_DELIVERY]:
-			for picker in _worker_pickers:
-				if picker.get_popup().visible:
-					return
-		if is_instance_valid(focused) and focused.has_meta("target_input"):
-			return
+	var popup_open := false
+	for picker in _worker_pickers:
+		if is_instance_valid(picker) and picker.get_popup().visible:
+			popup_open = true
 	var resources: Array = state.get("resources", [])
 	var recipes: Array = state.get("recipes", [])
 	var products: Array = state.get("products", [])
@@ -385,16 +436,24 @@ func _refresh(force := false) -> void:
 	if not force and next_key == _render_key:
 		return
 	_render_key = next_key
+	_stale_rows = false
 	var focused_row := ""
 	if is_instance_valid(focused) and focused.has_meta("row_id"):
 		focused_row = str(focused.get_meta("row_id"))
 	var scroll_position := _scroll.scroll_vertical
+	# A new tab (or the save tab, which keeps its own text) is drawn anew; a redraw of the same tab keeps every row
+	# whose shape did not change and only updates its values (see _reconcile_rows).
+	var full := _active_tab != _rendered_tab or _active_tab == TAB_SAVE
 	# Where the player is working, to put it back at the same place on screen once the list is drawn again.
-	var anchor := _view_anchor(focused) if _active_tab == _rendered_tab else {}
+	var anchor := {} if full else _view_anchor(focused)
 	_rendered_tab = _active_tab
-	for child in _rows.get_children():
-		_rows.remove_child(child)
-		child.queue_free()
+	var live := _rows
+	if full:
+		for child in _rows.get_children():
+			_rows.remove_child(child)
+			child.queue_free()
+	else:
+		_rows = VBoxContainer.new() # drawn here, outside the tree, then compared with what is shown
 	_save_input = null
 	_buttons_by_id.clear()
 	_worker_pickers.clear()
@@ -436,6 +495,20 @@ func _refresh(force := false) -> void:
 		TAB_SAVE: _render_save()
 	if _rows.get_child_count() == 0:
 		_rows.add_child(_label("가방에 아이템이 없어요." if _active_tab == TAB_INVENTORY else "지금 가능한 항목이 없어요.", 11))
+	redraw_stats.redraws += 1
+	if full:
+		redraw_stats.full += 1
+		redraw_stats.added += _rows.get_child_count()
+	else:
+		var fresh := _rows
+		_rows = live
+		# While a press is held or a popup is open, only values change: the pressed control and the popup's picker
+		# stay the same objects. Rows to add, take out or rebuild wait for the release (or the popup to close).
+		_reconcile_rows(live, fresh, _pointer_down or popup_open or not _drag.is_empty(), focused)
+		fresh.free()
+		if _stale_rows:
+			_render_key = "" # draw again once the press, the popup or the typing is over
+	_index_rows()
 	# Rows above can grow or shrink (a hut's new switch, a bottleneck line), and the containers would only lay the
 	# new rows out later in the frame. Lay them out now and scroll so the anchored control is where it was: the
 	# control under the pointer stays under it, so a click meant for it cannot land on another row.
@@ -447,16 +520,152 @@ func _refresh(force := false) -> void:
 		_scroll.scroll_vertical = scroll_position + roundi(now - float(anchor.offset))
 	# Focus goes back to the same control without moving the list: the scroll container follows focus, and it
 	# scrolled the list away under the pointer (to a control measured before the rows were laid out, or to one
-	# the player had scrolled off screen).
-	var previous_button: BaseButton = _buttons_by_id.get(focused_row)
-	if is_instance_valid(previous_button) and not previous_button.disabled:
+	# the player had scrolled off screen). A control kept by the redraw still has it.
+	var previous: Control = _buttons_by_id.get(focused_row)
+	if is_instance_valid(previous) and not previous.has_focus() and not (previous is BaseButton and previous.disabled):
 		_scroll.follow_focus = false
-		previous_button.grab_focus()
+		previous.grab_focus()
 		_scroll.follow_focus = true
+
+## The controls with an id (buttons, switches, pickers, fields) and the pickers, as the list shows them now.
+func _index_rows() -> void:
+	_buttons_by_id.clear()
+	_worker_pickers.clear()
+	for c in _rows.find_children("*", "Control", true, false):
+		if c.is_queued_for_deletion():
+			continue
+		if c.has_meta("row_id"):
+			_buttons_by_id[str(c.get_meta("row_id"))] = c
+		if c is OptionButton:
+			_worker_pickers.append(c)
+
+## Brings the shown rows (live) in line with the freshly drawn ones (fresh). Rows are matched in order by their id
+## (or title). A matched row of the same shape is kept and gets the new values (texts, availability, choices), so
+## a control being pressed, a picker's open popup, focus and typing survive the redraw; a row whose shape changed
+## is replaced, new rows are put in and rows that are gone taken out. With `hold` (a press or a popup) nothing is
+## put in, taken out or replaced: that waits for the next redraw. A row holding the field being typed in is never
+## replaced or taken out.
+func _reconcile_rows(live: Container, fresh: Container, hold: bool, focused: Control) -> void:
+	var olds := live.get_children()
+	var news := fresh.get_children()
+	var old_keys := olds.map(_row_key)
+	var i := 0
+	for n: Control in news:
+		var key := _row_key(n)
+		var j := old_keys.find(key, i)
+		if j < 0:
+			if hold:
+				_stale_rows = true
+				continue
+			var before: Node = olds[i] if i < olds.size() else null
+			fresh.remove_child(n)
+			live.add_child(n)
+			if before != null and before.get_parent() == live:
+				live.move_child(n, before.get_index())
+			redraw_stats.added += 1
+			continue
+		for k in range(i, j):
+			_take_out_row(live, olds[k], hold, focused)
+		var o: Control = olds[j]
+		if _same_shape(o, n):
+			_patch(o, n)
+			redraw_stats.patched += 1
+		elif hold or _holds_typing(o, focused):
+			_stale_rows = true
+		else:
+			var at := o.get_index()
+			fresh.remove_child(n)
+			live.add_child(n)
+			live.move_child(n, at)
+			live.remove_child(o)
+			o.queue_free()
+			redraw_stats.added += 1
+			redraw_stats.removed += 1
+		i = j + 1
+	for k in range(i, olds.size()):
+		_take_out_row(live, olds[k], hold, focused)
+
+func _take_out_row(live: Container, row: Node, hold: bool, focused: Control) -> void:
+	if hold or _holds_typing(row, focused):
+		_stale_rows = true
+		return
+	live.remove_child(row)
+	row.queue_free()
+	redraw_stats.removed += 1
+
+func _holds_typing(row: Node, focused: Control) -> bool:
+	return (focused is LineEdit or focused is TextEdit) and (row == focused or row.is_ancestor_of(focused))
+
+## A row's identity across redraws: its first control's id, else its first text.
+func _row_key(row: Node) -> String:
+	if row.has_meta("row_id"):
+		return "#" + str(row.get_meta("row_id"))
+	for c in row.find_children("*", "Control", true, false):
+		if c.has_meta("row_id"):
+			return "~" + str(c.get_meta("row_id"))
+	if row is Label:
+		return "L:" + row.text
+	for c in row.find_children("*", "Label", true, false):
+		return row.get_class() + ":" + c.text
+	return row.get_class()
+
+## Same kinds of controls in the same places, with the same ids and the same choices offered.
+func _same_shape(a: Node, b: Node) -> bool:
+	if a.get_class() != b.get_class() or a.get_meta_list() != b.get_meta_list():
+		return false
+	for m in a.get_meta_list():
+		if a.get_meta(m) != b.get_meta(m):
+			return false
+	if a is OptionButton:
+		if a.item_count != b.item_count:
+			return false
+		for k in a.item_count:
+			if a.get_item_text(k) != b.get_item_text(k):
+				return false
+	var ac := a.get_children()
+	var bc := b.get_children()
+	if ac.size() != bc.size():
+		return false
+	for k in ac.size():
+		if not _same_shape(ac[k], bc[k]):
+			return false
+	return true
+
+## Gives a kept control the values of its freshly drawn twin. A field being typed in keeps its text, a picker
+## with its popup open keeps its choice.
+func _patch(a: Node, b: Node) -> void:
+	if a is Label:
+		if a.text != b.text:
+			a.text = b.text
+		if b.has_theme_color_override("font_color"):
+			a.add_theme_color_override("font_color", b.get_theme_color("font_color"))
+		elif a.has_theme_color_override("font_color"):
+			a.remove_theme_color_override("font_color")
+	elif a is OptionButton:
+		a.disabled = b.disabled
+		if not a.get_popup().visible and a.selected != b.selected:
+			a.select(b.selected)
+	elif a is BaseButton:
+		if a.text != b.text:
+			a.text = b.text
+		a.disabled = b.disabled
+		a.tooltip_text = b.tooltip_text
+		if a.toggle_mode and a.button_pressed != b.button_pressed:
+			a.set_pressed_no_signal(b.button_pressed)
+	elif a is LineEdit:
+		if not a.has_focus() and a.text != b.text:
+			a.text = b.text
+	var ac := a.get_children()
+	var bc := b.get_children()
+	for k in ac.size():
+		_patch(ac[k], bc[k])
 
 ## The control to keep in place across a redraw, as {id, offset from the top of the list view}: the row under the
 ## pointer, else the focused control, else the first row on screen. {} when there is none.
 func _view_anchor(focused: Control) -> Dictionary:
+	# The scroll container moves the list to a new scroll value only later in the frame: measured before that, a
+	# wheel turn or a drag of the scroll bar just made would be undone by this redraw. Place the list first.
+	_scroll.notification(Container.NOTIFICATION_SORT_CHILDREN)
 	var view := _scroll.get_global_rect()
 	var pointer := _pointer
 	var picks: Array[Control] = []
@@ -476,8 +685,75 @@ func _view_anchor(focused: Control) -> Dictionary:
 	return {}
 
 func _input(event: InputEvent) -> void:
+	if _cancelling_press:
+		return
 	if event is InputEventMouse or event is InputEventScreenTouch or event is InputEventScreenDrag:
 		_pointer = event.position
+	if not is_workshop_open():
+		_pointer_down = false
+		_drag = {}
+		return
+	# Touch reaches the menu as mouse events too (emulated from the finger), so one path serves both.
+	var button := event as InputEventMouseButton
+	if button != null and button.button_index == MOUSE_BUTTON_LEFT:
+		if button.pressed:
+			_pointer_down = true
+			_drag = {"from": button.position, "scroll": _scroll.scroll_vertical, "active": false} if _can_swipe_from(button.position) else {}
+		else:
+			_pointer_down = false
+			var swiped := bool(_drag.get("active", false))
+			_drag = {}
+			if swiped:
+				get_viewport().set_input_as_handled() # the end of a swipe is not a tap
+			if _stale_rows:
+				_schedule_refresh()
+		return
+	var motion := event as InputEventMouseMotion
+	if motion != null and not _drag.is_empty():
+		var moved: Vector2 = motion.position - _drag.from
+		if not _drag.active and absf(moved.y) >= DRAG_START and absf(moved.y) > absf(moved.x):
+			_drag.active = true
+			_cancel_press.call_deferred()
+		if _drag.active:
+			_scroll.scroll_vertical = int(_drag.scroll) - roundi(moved.y)
+			get_viewport().set_input_as_handled()
+	elif event is InputEventScreenDrag and bool(_drag.get("active", false)):
+		get_viewport().set_input_as_handled()
+
+## A swipe can start on a card, its texts, buttons and pickers, but not on the scroll bar (dragged as it is) or in a
+## text field (where dragging selects text), and not while a picker's list is open.
+func _can_swipe_from(at: Vector2) -> bool:
+	if not _scroll.get_global_rect().has_point(at):
+		return false
+	var bar := _scroll.get_v_scroll_bar()
+	if bar.visible and bar.get_global_rect().has_point(at):
+		return false
+	for picker in _worker_pickers:
+		if is_instance_valid(picker) and picker.get_popup().visible:
+			return false
+	for c in _rows.find_children("*", "Control", true, false):
+		if (c is LineEdit or c is TextEdit) and c.is_visible_in_tree() and c.get_global_rect().has_point(at):
+			return false
+	return true
+
+## Once a press turned into a swipe, whatever it started on must not act: it gets the pointer leaving and the
+## button let go away from it, as if the finger had slid off it. (Buttons act on release and pickers open on
+## release, so nothing has happened yet.)
+func _cancel_press() -> void:
+	_cancelling_press = true
+	var away := Vector2(-4096, -4096)
+	var leave := InputEventMouseMotion.new()
+	leave.position = away
+	leave.global_position = away
+	leave.button_mask = MOUSE_BUTTON_MASK_LEFT
+	get_viewport().push_input(leave, true)
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	release.position = away
+	release.global_position = away
+	get_viewport().push_input(release, true)
+	_cancelling_press = false
 
 ## A card's control with an id: the one at the point if there is one, else its first.
 func _row_control(card: Control, point: Vector2) -> Control:
@@ -662,6 +938,7 @@ func _render_huts(huts: Dictionary, recipes: Array, inventory: Dictionary, gold:
 				picker.add_item(_name_for(id))
 		picker.select(maxi(0, keys.find(recipe_id)))
 		picker.disabled = float(hut.progress) > 0.0
+		_pick_on_release(picker, keys)
 		picker.item_selected.connect(_choose_hut_recipe.bind(str(hut.id), keys))
 		picker.get_popup().popup_hide.connect(_schedule_refresh)
 		picker.set_meta("row_id", row_id)
@@ -780,6 +1057,7 @@ func _render_workers(workers: Array, assigned: Array, resources: Array, gold: fl
 			picker.free()
 			continue
 		picker.select(available_resources.find(assigned_to))
+		_pick_on_release(picker, available_resources)
 		picker.item_selected.connect(_assign_worker.bind(id, available_resources))
 		picker.get_popup().popup_hide.connect(_schedule_refresh)
 		picker.set_meta("row_id", id)
@@ -871,9 +1149,10 @@ func _render_free_delivery(card: Dictionary, recipes: Array, actions: VBoxContai
 	var qty := int(choice.get("qty", 1))
 	picker.select(keys.find(product))
 	picker.set_meta("row_id", "ship_product:" + id)
-	picker.item_selected.connect(func(index: int) -> void:
-		_ship_choice[id] = {"product": keys[index], "qty": qty}
-		_refresh(true))
+	_pick_on_release(picker, keys)
+	# Every handler reads the picker and the field as they are now (not as they were drawn), so what is typed or
+	# picked last is what the preview shows and what is shipped.
+	picker.item_selected.connect(_on_ship_product.bind(id))
 	picker.get_popup().popup_hide.connect(_schedule_refresh)
 	_worker_pickers.append(picker)
 	actions.add_child(picker)
@@ -881,23 +1160,120 @@ func _render_free_delivery(card: Dictionary, recipes: Array, actions: VBoxContai
 	field.custom_minimum_size = Vector2(60, 25)
 	field.max_length = 6
 	field.text = str(qty)
+	field.set_meta("row_id", "ship_qty:" + id)
 	field.set_meta("target_input", true)
-	field.text_submitted.connect(func(_t: String) -> void: field.release_focus())
-	field.focus_exited.connect(func() -> void:
-		var n := clampi(int(field.text) if field.text.is_valid_int() else 1, 1, 999999)
-		_ship_choice[id] = {"product": product, "qty": n}
-		_schedule_refresh())
+	field.text_changed.connect(_on_ship_qty_typed.bind(id))
+	field.text_submitted.connect(_on_ship_qty_submitted.bind(id))
+	field.focus_exited.connect(_on_ship_qty_done.bind(id))
 	actions.add_child(field)
 	var preview: Dictionary = _workshop.call("delivery_preview", id, product, qty)
 	if not preview.is_empty():
 		var text := _label("보유 %s개 · 배송비 %d G · 점수 +%s" % [format_quantity(float(preview.have)), int(preview.cost), format_quantity(float(preview.score))], 9)
 		text.add_theme_color_override("font_color", MUTED)
 		actions.add_child(text)
-	var send := _button("자유 납품", func() -> void:
-		_workshop.call("ship_free", id, product, qty)
-		_schedule_refresh())
+	var send := _button("자유 납품", _send_free_delivery.bind(id))
+	send.set_meta("row_id", "ship_send:" + id)
 	send.disabled = preview.is_empty() or float(preview.have) < qty
 	actions.add_child(send)
+
+## A picker opens its list when let go, like a button acts, so a swipe that starts on it scrolls instead.
+## Its choices are kept on it, so a redraw keeps the picker only while it offers the same ones.
+func _pick_on_release(picker: OptionButton, keys: PackedStringArray) -> void:
+	picker.action_mode = BaseButton.ACTION_MODE_BUTTON_RELEASE
+	picker.set_meta("keys", keys)
+
+## The free delivery quantity typed in a field: a whole number from 1 to 999999, or -1 when it is not a number.
+static func ship_quantity(text: String) -> int:
+	var value := text.strip_edges()
+	if not value.is_valid_int():
+		return -1
+	return clampi(int(value), 1, 999999)
+
+## What a company's free delivery is set to now: the picked product and the typed quantity (if it is a number).
+func _ship_now(id: String) -> Dictionary:
+	var choice: Dictionary = _ship_choice.get(id, {}).duplicate()
+	var picker: OptionButton = _buttons_by_id.get("ship_product:" + id)
+	if is_instance_valid(picker) and picker.selected >= 0:
+		var keys: PackedStringArray = picker.get_meta("keys", PackedStringArray())
+		if picker.selected < keys.size():
+			choice.product = keys[picker.selected]
+	var field: LineEdit = _buttons_by_id.get("ship_qty:" + id)
+	if is_instance_valid(field):
+		choice.typed = field.text
+		var qty := ship_quantity(field.text)
+		if qty > 0:
+			choice.qty = qty
+	return choice
+
+func _keep_ship_choice(id: String) -> Dictionary:
+	var now := _ship_now(id)
+	_ship_choice[id] = {"product": str(now.get("product", "")), "qty": int(now.get("qty", 1))}
+	return now
+
+func _on_ship_product(_index: int, id: String) -> void:
+	_keep_ship_choice(id) # the typed quantity stays with the new product
+	_schedule_refresh()
+
+## Typing updates the choice at once, so the preview (cost, score) follows what will be shipped. What was typed
+## is also kept as typed: pressing 자유 납품 moves the focus off the field (which tidies its text) and a redraw may
+## show the last good number, but the press is judged on what the player typed.
+var _ship_typed := {}
+
+func _on_ship_qty_typed(text: String, id: String) -> void:
+	_ship_typed[id] = text
+	_keep_ship_choice(id)
+	_schedule_refresh()
+
+func _on_ship_qty_submitted(_text: String, id: String) -> void:
+	var field: LineEdit = _buttons_by_id.get("ship_qty:" + id)
+	if is_instance_valid(field):
+		field.release_focus()
+
+## Leaving the field: a number outside 1..999999 becomes the nearest one, anything else 1 (as before).
+func _on_ship_qty_done(id: String) -> void:
+	var field: LineEdit = _buttons_by_id.get("ship_qty:" + id)
+	if is_instance_valid(field):
+		var qty := ship_quantity(field.text)
+		field.text = str(qty if qty > 0 else 1)
+	_keep_ship_choice(id)
+	_schedule_refresh()
+
+## Pressing 자유 납품 ships the product picked and the quantity typed right now, typed and not confirmed with Enter
+## included. A quantity that is not a whole number from 1 to 999999 is not shipped: the field shows the number it
+## would become and the player confirms it with another press. A second press in the same moment ships nothing.
+const SHIP_REPEAT_MS := 400
+var _ship_sent_at := {}
+var _ship_pending := {}
+
+func _send_free_delivery(id: String) -> void:
+	# The web build hands typed keys to the game a frame later than clicks: a 5 typed just before a click in the
+	# same frame would still be on its way. Ship on the next frame, once everything typed before the press is in.
+	if _ship_pending.has(id):
+		return
+	_ship_pending[id] = true
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_ship_pending.erase(id)
+	if not is_instance_valid(_workshop) or not is_workshop_open():
+		return
+	var now := _keep_ship_choice(id)
+	var typed := str(_ship_typed.get(id, now.get("typed", str(now.get("qty", 1)))))
+	_ship_typed.erase(id)
+	var qty := ship_quantity(typed)
+	if qty < 0 or qty != int(typed.strip_edges()):
+		var field: LineEdit = _buttons_by_id.get("ship_qty:" + id)
+		if is_instance_valid(field):
+			field.text = str(qty if qty > 0 else int(now.get("qty", 1)))
+		_keep_ship_choice(id)
+		_show_feedback("납품 수량은 1~999999 사이의 숫자로 입력하세요. 확인 후 다시 눌러 주세요.")
+		_schedule_refresh()
+		return
+	var at := Time.get_ticks_msec()
+	if at - int(_ship_sent_at.get(id, -SHIP_REPEAT_MS)) < SHIP_REPEAT_MS:
+		return
+	if _workshop.call("ship_free", id, str(now.product), qty):
+		_ship_sent_at[id] = at
+	_schedule_refresh()
 
 func _render_upgrades(upgrades: Array, inventory: Dictionary, gold: float) -> void:
 	if upgrades.is_empty():
@@ -1137,16 +1513,20 @@ func _toggle_automation(enabled: bool, method: String, id: String) -> void:
 
 func _add_craft_target(actions: VBoxContainer, id: String, target: int) -> void:
 	var field := LineEdit.new()
-	field.placeholder_text = "목표 (0 = 무제한)"
+	# The hint is set when the field is shown: a redraw draws every row outside the tree first and keeps the shown
+	# field, and shaping this text there (without the menu's font) cost about 1 ms per field, every redraw.
+	field.tree_entered.connect(func() -> void: field.placeholder_text = "목표 (0 = 무제한)", CONNECT_ONE_SHOT)
 	field.custom_minimum_size = Vector2(100, 25)
 	field.max_length = 6
 	field.text = str(target)
 	field.set_meta("craft_target", true)
+	field.set_meta("row_id", "craft_target:" + id)
 	field.text_submitted.connect(func(_text: String) -> void: field.release_focus())
-	field.focus_exited.connect(_commit_craft_target.bind(field, id, target))
+	field.focus_exited.connect(_commit_craft_target.bind(field, id))
 	actions.add_child(field)
 
-func _commit_craft_target(field: LineEdit, id: String, previous: int) -> void:
+func _commit_craft_target(field: LineEdit, id: String) -> void:
+	var previous := int(_workshop.get("state").automation.get("target", {}).get(id, 0)) # now, not when drawn
 	var value := field.text.strip_edges()
 	if not value.is_empty() and not value.is_valid_int():
 		field.text = str(previous)
@@ -1182,8 +1562,11 @@ func _add_row(title: String, details: String, action := "", method := "", id := 
 		var button := _button(action, _perform.bind(method, id))
 		button.custom_minimum_size = Vector2(48, 27)
 		button.disabled = not available
-		button.set_meta("row_id", id)
-		_buttons_by_id[id] = button
+		# Rows are found again by this id after a redraw (focus, place on screen). Two rows acting on the same id
+		# (마을: 잔해 치우기 and 감정 both on "appraiser") keep apart: the second one is "method:id".
+		var row_id := id if not _buttons_by_id.has(id) else "%s:%s" % [method, id]
+		button.set_meta("row_id", row_id)
+		_buttons_by_id[row_id] = button
 		actions.add_child(button)
 	return actions
 
