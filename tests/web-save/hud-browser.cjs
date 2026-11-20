@@ -10,7 +10,8 @@
 //   phone    QA-04  swipes on a card's text, from a picker and from a button scroll the list, press and open nothing
 //            QA-01  5 typed, 자유 납품 tapped at once → 5 shipped;  QA-05  전량 판매 held 420 ms by touch → sold
 //            the picker's list by touch; typing while the page is shortened (an on-screen keyboard) → kept, shipped;
-//            every control of every tab can be scrolled fully into view (tap sizes saved to phone-tap-sizes.json)
+//            each of the 9 tabs opens with a tap; every control of every tab can be scrolled fully into view
+//            (tap sizes saved to phone-tap-sizes.json)
 // Prints one line per check and "HUD BROWSER PASS n/n", exits 1 on any failure. Screenshots go to SAVE_QA_OUTPUT.
 const assert = require('node:assert/strict');
 const { createServer } = require('node:http');
@@ -337,6 +338,18 @@ async function phone(browser, origin) {
   await page.screenshot({ path: path.join(out, 'phone-keyboard.png') });
   await page.setViewportSize(viewport);
   await delay(600);
+  // all nine tabs open with a tap on their button
+  await hud(page, 'open', 'inventory');
+  await delay(300);
+  const tabButtons = (await hud(page, 'controls')).filter(c => c.id.startsWith('tab:'));
+  const tabsOpened = [];
+  for (let t = 0; t < tabButtons.length; t++) {
+    const [x, y, w, h] = tabButtons[t].rect;
+    await page.touchscreen.tap(x + w / 2, y + h / 2);
+    await delay(300);
+    tabsOpened.push((await hud(page, 'view')).tab);
+  }
+  check(tabButtons.length === 9 && tabsOpened.every((tab, t) => tab === t), 'phone: each of the 9 tabs opens with a tap on its button', { tabsOpened });
   // small screen: every control of every tab can be scrolled fully into view; tap sizes are recorded
   const sizes = [];
   let unreachable = [];
