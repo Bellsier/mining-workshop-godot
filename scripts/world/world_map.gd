@@ -283,7 +283,6 @@ func _build_ui() -> void:
 func _draw() -> void:
 	for p: Dictionary in WorldTerrain.peaks(state.tunnel_unlocked):
 		_draw_peak(to_px(Vector2(p.x, p.y)), p.size)
-	_draw_base(to_px(Vector2(state.base)))
 	scenery_now = _scenery()
 	for p: Dictionary in scenery_now:
 		if not WorldSway.sways(str(p.kind)):
@@ -296,12 +295,6 @@ func _draw_peak(at: Vector2, size: float) -> void:
 	var h := 40.0 * size
 	draw_colored_polygon(PackedVector2Array([at + Vector2(-w / 2, 8), at + Vector2(0, 8 - h), at + Vector2(w / 2, 8)]), Color8(95, 90, 85))
 	draw_colored_polygon(PackedVector2Array([at + Vector2(-w / 5, 8 - h * 0.6), at + Vector2(0, 8 - h), at + Vector2(w / 5, 8 - h * 0.6)]), Color8(232, 236, 240))
-
-func _draw_base(at: Vector2) -> void:
-	var sprite := Sprites.base()
-	draw_texture(sprite, Sprites.origin(sprite, at, Sprites.ANCHOR.base))
-	draw_string_outline(FONT, at + Vector2(-10, -60), "공방", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, 3, Color("241b19"))
-	draw_string(FONT, at + Vector2(-10, -60), "공방", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("f7e1b8"))
 
 ## web tdOreSprite: a mossy rock while hidden (with a "?" to say something is there), the ore's colours once
 ## found, a staked flag once secured; a ring round the one in reach.

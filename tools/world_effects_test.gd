@@ -7,7 +7,8 @@ extends SceneTree
 ## 3. In the world scene: the sway layer, the cloud shadows and the fireflies are there; securing and mining a vein
 ##    with the real interaction raises "광맥 확보!" and "+1 철광석", a second press adds up (+2), and the effect
 ##    quality's lowest step stops the sway, clouds and fireflies.
-## 4. The "다음 할 일" card: shown with the menu closed, hidden while it is open; the first step says the first E
+## 4. The cabin hides the player standing behind it (and not one at its door or beside it).
+## 5. The "다음 할 일" card: shown with the menu closed, hidden while it is open; the first step says the first E
 ##    secures a vein.
 ## Prints "WORLD EFFECTS PASS" and exits 0, or the failures and exits 1.
 
@@ -140,6 +141,17 @@ func _scene() -> void:
 	hud.close_workshop()
 	await _frames(2)
 	_check(hud._hint_card.visible, "the card is back when the menu closes")
+	# a building hides the player behind it, not one in front of it or beside it
+	var objects: Node2D = map.objects
+	var cabin_at: Vector2 = map.to_px(Vector2(map.state.base))
+	var cases := [[Vector2(0, -34), true, "behind the cabin (north of its wall)"], [Vector2(0, 2), false, "at the cabin's door"],
+		[Vector2(70, -34), false, "beside the cabin"]]
+	for c: Array in cases:
+		player.position = cabin_at + c[0]
+		await _frames(2)
+		var hidden: bool = player.z_index < objects.buildings.z_index
+		_check(objects.player_behind() == c[1] and hidden == c[1], "player %s is %s the cabin (z %d, buildings %d)" % [c[2], "under" if c[1] else "over", player.z_index, objects.buildings.z_index])
+	_check(objects.get_node("Workers").z_index > objects.buildings.z_index, "the workers stay drawn over the buildings, as before")
 	# the lowest effect quality stops the effects
 	light.quality = 2
 	light.force_darkness = 0.34

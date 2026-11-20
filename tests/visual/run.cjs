@@ -229,7 +229,16 @@ async function dusk({ page, shot, details, origin }) {
   await prepareSave(page, origin, worldSave(workshop, false));
   await delay(1500);
   await shot('dusk-workshop');
-  await holdKey(page, 's', () => delay(700));
+  // round the cabin's west wall to stand behind it: the roof hides the player there
+  await walkTo(page, 'x', workshop.x - 80, 10);
+  await walkTo(page, 'y', -40, 6);
+  await walkTo(page, 'x', workshop.x, 8);
+  const behind = await position(page);
+  assert.ok(behind.y < -28 && Math.abs(behind.x - workshop.x) < 12, 'Behind the cabin: ' + JSON.stringify(behind));
+  await shot('dusk-behind-cabin');
+  details.behindCabin = behind;
+  await walkTo(page, 'x', workshop.x - 80, 10);
+  await walkTo(page, 'y', 140, 10);
   await shot('dusk-meadow');
   details.clock = 'dusk';
 }

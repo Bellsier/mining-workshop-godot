@@ -115,6 +115,12 @@ jobs:
           set -o pipefail
           timeout 300 godot --headless --path . --fixed-fps 60 --script res://tools/world_effects_test.gd 2>&1 | tee "$RUNNER_TEMP/world-effects.log"
           grep -F 'WORLD EFFECTS PASS' "$RUNNER_TEMP/world-effects.log"
+      - name: Long play with every effect on (nodes, objects and memory do not pile up)
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout 600 godot --headless --path . --fixed-fps 60 --script res://tools/world_long_run_bench.gd -- --check 2>&1 | tee "$RUNNER_TEMP/world-long-run.log"
+          grep -F 'WORLD LONG RUN DONE' "$RUNNER_TEMP/world-long-run.log"
       - name: Menu redraws while the game runs (rows added per 100 ticks, frame times)
         shell: bash
         run: |
