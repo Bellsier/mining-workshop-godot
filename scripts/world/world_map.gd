@@ -18,6 +18,7 @@ const Layout := preload("res://scripts/village_layout.gd")
 const FONT := preload("res://fonts/Galmuri9.ttf")
 const Sprites := preload("res://scripts/world/world_sprites.gd")
 const WorldSway := preload("res://scripts/world/world_sway.gd")
+const WorldFloats := preload("res://scripts/world/world_floats.gd")
 
 const UNIT := 64.0
 const REACH := 0.6
@@ -45,6 +46,7 @@ var _target: Dictionary = {}
 var objects: Node2D
 ## The scenery as last drawn (the sway layer draws its trees and grass from it every frame).
 var scenery_now: Array = []
+var floats: Node2D
 
 func _ready() -> void:
 	var game := get_node_or_null("/root/Game")
@@ -77,6 +79,9 @@ func _ready() -> void:
 	add_child(objects)
 	objects.setup(_economy(), state, player)
 	sway.setup(self, objects.light)
+	floats = WorldFloats.new()
+	floats.name = "Floats"
+	add_child(floats)
 	if state.tunnel_unlocked and entry == "FromTunnel":
 		_add_passage_door() # legacy trial route only; normal play stays on one map
 	_build_ui()
@@ -239,6 +244,9 @@ func show_toast(text: String) -> void:
 
 func _on_discovered(mine: Dictionary) -> void:
 	show_toast("새 광맥 발견: %s (%d, %d)" % [WorldData.resource_name(mine.resource), int(mine.x), int(mine.y)])
+	# a float over the vein itself, so the find is seen where it is
+	if floats != null:
+		floats.add("새 광맥! " + WorldData.resource_name(mine.resource), to_px(Vector2(mine.x, mine.y)), Color("bff3ff"))
 	queue_redraw()
 
 func _build_ui() -> void:
@@ -476,9 +484,14 @@ func interact(id: String) -> String:
 				"secure":
 					if economy.secure_vein(str(t.id)):
 						show_toast("확보!")
+						floats.add("광맥 확보!", to_px(Vector2(t.x, t.y)))
 						queue_redraw()
 				"mine":
-					economy.mine_vein(str(t.id))
+					var vein: Dictionary = state.mine_by_id(str(t.id))
+					if economy.mine_vein(str(t.id)):
+						var amount: float = float(vein.miningPower) * float(economy._multiplier())
+						var name: String = WorldData.resource_name(vein.resource)
+						floats.add("+%s %s" % [WorldFloats._format(amount), name], to_px(Vector2(t.x, t.y)), WorldFloats.OK_COLOR, 24.0, name, amount)
 				_:
 					show_toast(str(t.label))
 		"base":

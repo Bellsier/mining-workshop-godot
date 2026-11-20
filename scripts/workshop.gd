@@ -946,6 +946,9 @@ func next_hint() -> String:
 		var step := ""
 		if float(state.inventory.get("steel", 0)) > 0.0 or _has(steel.need):
 			step = "공방 앞에서 열기 버튼을 눌러 강철을 만들어 파세요." if touch else "공방 앞에서 E를 눌러 강철을 만들어 파세요."
+		elif not world.mines.any(func(m: Dictionary) -> bool: return m.get("developmentState") == "secured" and m.resource in ["iron", "coal"]):
+			# The first press on a vein secures it (web secureMine); only then does it give ore.
+			step = "철광석·석탄 광맥 앞에서 행동 버튼으로 광맥을 확보한 뒤 캐세요." if touch else "철광석·석탄 광맥 앞에서 E를 눌러 광맥을 확보한 뒤 캐세요."
 		else:
 			step = "광맥 앞에서 행동 버튼으로 철광석과 석탄을 캐세요." if touch else "광맥 앞에서 E를 눌러 철광석과 석탄을 캐세요."
 		return step + " 첫 가챠권까지 " + progress

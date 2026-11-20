@@ -109,6 +109,7 @@ func _ready() -> void:
 	add_child(surface)
 	surface.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_build_bar(surface)
+	_build_hint(surface)
 	_build_overlay(surface)
 	_build_toast(surface)
 	_build_recovery(surface)
@@ -190,6 +191,7 @@ func close_workshop() -> void:
 	_overlay.hide()
 	_bar.show()
 	_save_indicator.show()
+	_update_hint()
 	_action.visible = not _action_label.is_empty()
 	_torch.visible = _torch_callback.is_valid()
 	_garden.visible = not _garden.text.is_empty()
@@ -250,6 +252,7 @@ func _open(only_inventory: bool) -> void:
 	for index in range(_tab_buttons.size()):
 		_tab_buttons[index].visible = not only_inventory or index in [TAB_INVENTORY, TAB_SAVE]
 	_bar.hide()
+	_hint_card.hide()
 	_save_indicator.hide()
 	_action.hide()
 	_torch.hide()
@@ -261,6 +264,56 @@ func _open(only_inventory: bool) -> void:
 	_scroll.scroll_vertical = 0
 	_rendered_tab = -1 # start at the top, not at the place kept from the last drawing
 	_refresh(true)
+
+## The "다음 할 일" card (web #nextHint in the world view): what to do next, at the top left next to the map, while
+## the menu is closed. It fades while the player walks under it (web td-hint-under / td-hint-near).
+var _hint_card: PanelContainer
+var _hint_text: Label
+
+func _build_hint(surface: Control) -> void:
+	_hint_card = PanelContainer.new()
+	_hint_card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	surface.add_child(_hint_card)
+	_hint_card.position = Vector2(84, 5)
+	_hint_card.custom_minimum_size = Vector2(186, 0)
+	_hint_card.size = Vector2(186, 0)
+	var lines := VBoxContainer.new()
+	lines.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lines.add_theme_constant_override("separation", 1)
+	_hint_card.add_child(lines)
+	var title := _label("다음 할 일", 9)
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	title.add_theme_color_override("font_color", Color("f1c577"))
+	lines.add_child(title)
+	_hint_text = _label("", 9)
+	_hint_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hint_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_hint_text.max_lines_visible = 3
+	_hint_text.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_hint_text.custom_minimum_size.x = 178
+	lines.add_child(_hint_text)
+	_hint_card.hide()
+
+func _update_hint() -> void:
+	var hint: String = str(_workshop.call("next_hint")) if _workshop.has_method("next_hint") else ""
+	if hint != _hint_text.text:
+		_hint_text.text = hint
+		_hint_card.reset_size()
+	_hint_card.visible = not hint.is_empty() and not is_workshop_open() and not _workshop.input_frozen()
+
+func _process(_delta: float) -> void:
+	if _hint_card == null or not _hint_card.visible or not is_instance_valid(_workshop):
+		return
+	var walker: Variant = _workshop.get("player")
+	var alpha := 1.0
+	if walker is Node2D and is_instance_valid(walker) and (walker as Node2D).is_inside_tree():
+		var at: Vector2 = (walker as Node2D).get_global_transform_with_canvas().origin
+		var area := _hint_card.get_global_rect()
+		if area.grow(6).has_point(at):
+			alpha = 0.15
+		elif area.grow(40).has_point(at):
+			alpha = 0.5
+	_hint_card.modulate.a = move_toward(_hint_card.modulate.a, alpha, 0.1)
 
 func _build_bar(surface: Control) -> void:
 	_save_indicator = _label("", 10)
@@ -426,6 +479,7 @@ func _refresh(force := false) -> void:
 	_gold.text = format_quantity(float(_workshop.get("state").get("gold", 0))) + " G"
 	_panel_gold.text = _gold.text
 	if not is_workshop_open():
+		_update_hint()
 		return
 	var state: Dictionary = _workshop.call("snapshot")
 	var gold := float(state.get("gold", 0))
