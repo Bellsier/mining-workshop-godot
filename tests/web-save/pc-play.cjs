@@ -432,7 +432,11 @@ async function partB(page, origin, state) {
     check(s.gold > gold1, 'B: automatic selling earned gold meanwhile', { from: gold1, to: s.gold });
     await page.keyboard.press('Escape');
     await delay(300);
-    const through = await westward();
+    // Through the open tunnel to the land beyond, walking round what stands in the way (the village is laid out
+    // differently in every new game: a building or its ruins can stand on the straight line west).
+    const from = await position(page);
+    await walkTo(page, -9, 1.55, 0.8).catch(() => null);
+    const through = { from, to: await position(page) };
     check(through.to.x < -6.25, 'B: the player walks west through the open tunnel', through);
     await shot(page, 'b-tunnel');
   }
