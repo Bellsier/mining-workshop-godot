@@ -1,0 +1,267 @@
+{
+  "world": {
+    "base": {
+      "level": 1,
+      "x": 2,
+      "y": 0
+    },
+    "hiddenMineIds": [
+      "mine_ring_mid_2",
+      "mine_ring_mid_4",
+      "mine_ring_far_1",
+      "mine_ring_far_2",
+      "mine_ring_far_3",
+      "mine_ring_outer_1",
+      "mine_ring_outer_2",
+      "mine_survey_15",
+      "mine_survey_16",
+      "mine_survey_17",
+      "mine_beyond_deepForest_1",
+      "mine_beyond_deepForest_2",
+      "mine_beyond_deepForest_3",
+      "mine_beyond_rockyGround_1",
+      "mine_beyond_rockyGround_2",
+      "mine_beyond_halfDugMine_1",
+      "mine_beyond_halfDugMine_2",
+      "mine_beyond_rareDeep_1"
+    ],
+    "layoutSeed": 42,
+    "mines": [
+      {
+        "developmentState": "unsecured",
+        "grade": 1,
+        "id": "mine_start_iron",
+        "miningPower": 1,
+        "resource": "iron",
+        "x": 4,
+        "y": 0
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 1,
+        "id": "mine_start_coal",
+        "miningPower": 1,
+        "resource": "coal",
+        "x": 0,
+        "y": -1
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 1,
+        "id": "mine_ring_near_1",
+        "miningPower": 1,
+        "resource": "coal",
+        "x": 5,
+        "y": 2
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 1,
+        "id": "mine_ring_near_2",
+        "miningPower": 1,
+        "resource": "coal",
+        "x": 2,
+        "y": -3
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 1,
+        "id": "mine_ring_near_3",
+        "miningPower": 1,
+        "resource": "coal",
+        "x": 5,
+        "y": -2
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 1,
+        "id": "mine_ring_mid_1",
+        "miningPower": 1,
+        "resource": "coal",
+        "x": 0,
+        "y": 5
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 2,
+        "id": "mine_ring_mid_2",
+        "miningPower": 1,
+        "resource": "crystal",
+        "x": 3,
+        "y": -5
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 1,
+        "id": "mine_ring_mid_3",
+        "miningPower": 1,
+        "resource": "iron",
+        "x": -3,
+        "y": 4
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 1,
+        "id": "mine_ring_mid_4",
+        "miningPower": 1,
+        "resource": "coal",
+        "x": 1,
+        "y": -5
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 2,
+        "id": "mine_ring_far_1",
+        "miningPower": 1,
+        "resource": "crystal",
+        "x": -2,
+        "y": 6
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 2,
+        "id": "mine_ring_far_2",
+        "miningPower": 1,
+        "resource": "crystal",
+        "x": -2,
+        "y": -9
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 2,
+        "id": "mine_ring_far_3",
+        "miningPower": 1,
+        "resource": "mana",
+        "x": -3,
+        "y": 8
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 3,
+        "id": "mine_ring_outer_1",
+        "miningPower": 1,
+        "resource": "rareMetal",
+        "x": 7,
+        "y": 9
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 3,
+        "id": "mine_ring_outer_2",
+        "miningPower": 1,
+        "resource": "rareMetal",
+        "x": 9,
+        "y": -10
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 4,
+        "id": "mine_survey_15",
+        "miningPower": 1,
+        "resource": "cosmicShard",
+        "x": 3,
+        "y": 10
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 4,
+        "id": "mine_survey_16",
+        "miningPower": 1,
+        "resource": "plasma",
+        "x": 2,
+        "y": -10
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 3,
+        "id": "mine_survey_17",
+        "miningPower": 1,
+        "resource": "relic",
+        "x": 7,
+        "y": -9
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 2,
+        "id": "mine_beyond_deepForest_1",
+        "miningPower": 1,
+        "resource": "mana",
+        "x": -8,
+        "y": 2
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 2,
+        "id": "mine_beyond_deepForest_2",
+        "miningPower": 1,
+        "resource": "crystal",
+        "x": -8,
+        "y": -1
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 3,
+        "id": "mine_beyond_deepForest_3",
+        "miningPower": 1,
+        "resource": "relic",
+        "x": -8,
+        "y": 0
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 2,
+        "id": "mine_beyond_rockyGround_1",
+        "miningPower": 1,
+        "resource": "mana",
+        "x": -9,
+        "y": 5
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 2,
+        "id": "mine_beyond_rockyGround_2",
+        "miningPower": 1,
+        "resource": "mana",
+        "x": -9,
+        "y": -3
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 3,
+        "id": "mine_beyond_halfDugMine_1",
+        "miningPower": 1,
+        "resource": "relic",
+        "x": -10,
+        "y": 8
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 3,
+        "id": "mine_beyond_halfDugMine_2",
+        "miningPower": 1,
+        "resource": "rareMetal",
+        "x": -9,
+        "y": -5
+      },
+      {
+        "developmentState": "unsecured",
+        "grade": 3,
+        "id": "mine_beyond_rareDeep_1",
+        "miningPower": 1,
+        "resource": "relic",
+        "x": -9,
+        "y": -8
+      }
+    ],
+    "tunnelUnlocked": true
+  },
+  "completed_research": {
+    "explorationGear": true,
+    "geologicalSurvey": true,
+    "tunnelWork": true
+  },
+  "unlocked_sites": {
+    "abandonedMine": true,
+    "manaVein": true
+  }
+}
