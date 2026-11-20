@@ -46,29 +46,12 @@ const ready = page => page.waitForFunction(() => window.__trial_scene === 'World
   timeout: 45000,
 });
 
-// Godot 4.4.1's Web template mirrors user:// to this Emscripten IndexedDB store.
-// A read-only transaction verifies durability after the engine's asynchronous sync.
-function readSave(page) {
-  return page.evaluate(() => new Promise((resolve, reject) => {
-    const request = indexedDB.open('/userfs');
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => {
-      const db = request.result;
-      const tx = db.transaction('FILE_DATA', 'readonly');
-      const cursor = tx.objectStore('FILE_DATA').openCursor();
-      let state;
-      cursor.onsuccess = () => {
-        const current = cursor.result;
-        if (!current) return;
-        if (String(current.key).endsWith('/workshop_save.json')) {
-          state = JSON.parse(new TextDecoder().decode(current.value.contents)).state;
-        }
-        current.continue();
-      };
-      tx.oncomplete = () => { db.close(); resolve(state); };
-      tx.onabort = () => { db.close(); reject(tx.error); };
-    };
-  }));
+// The game's own save store (scripts/workshop_web_save.js): IndexedDB "mining-workshop-godot", record
+// "slot:main". Reads and fixture writes go through the save QA helper, which writes only from /__qa_fixture.
+const store = require('../web-save/store.cjs');
+
+async function readSave(page) {
+  return (await store.read(page))?.state;
 }
 
 async function untilSaved(page, predicate, message) {
@@ -86,46 +69,17 @@ async function untilSaved(page, predicate, message) {
 async function prepareSave(page, origin, state) {
   await untilSaved(page, s => s.world && s.gold === 0, 'fresh save missing');
   await page.goto(origin + '/__qa_fixture');
-  await page.evaluate(fixture => new Promise((resolve, reject) => {
-    if (location.hostname !== '127.0.0.1' || location.pathname !== '/__qa_fixture') {
-      reject(new Error('Fixture requires the isolated test origin'));
-      return;
-    }
-    const request = indexedDB.open('/userfs');
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => {
-      const db = request.result;
-      const tx = db.transaction('FILE_DATA', 'readwrite');
-      const cursor = tx.objectStore('FILE_DATA').openCursor();
-      let written = false;
-      cursor.onsuccess = () => {
-        const entry = cursor.result;
-        if (!entry) return;
-        if (!String(entry.key).endsWith('/workshop_save.json')) {
-          entry.continue();
-          return;
-        }
-        const file = entry.value;
-        const current = JSON.parse(new TextDecoder().decode(file.contents)).state;
-        if (current.gold !== 0 || Object.values(current.inventory).some(amount => amount !== 0)) {
-          tx.abort();
-          return;
-        }
-        file.contents = new TextEncoder().encode(JSON.stringify({ version: 1, state: fixture }));
-        file.timestamp = new Date();
-        entry.update(file);
-        written = true;
-      };
-      tx.oncomplete = () => {
-        db.close();
-        if (written) resolve();
-        else reject(new Error('Fresh test record was not found'));
-      };
-      tx.onabort = () => { db.close(); reject(tx.error || new Error('Fixture transaction aborted')); };
-    };
-  }), state);
+  // Only the record the fresh context just made is replaced (no gold, nothing in stock).
+  const current = await readSave(page);
+  if (!current || current.gold !== 0 || Object.values(current.inventory || {}).some(amount => amount !== 0)) {
+    throw new Error('Fresh test record was not found');
+  }
+  await store.replace(page, state);
   await page.goto(origin);
   await ready(page);
+  // The game loads its save from IndexedDB after the world scene is up: wait for it to place the player.
+  await page.waitForFunction(({ x, y }) => Math.hypot(window.__trial_x - x, window.__trial_y - y) < 0.01,
+    { x: state.position.x, y: state.position.y }, { timeout: 20000 }).catch(() => {});
   const actual = await position(page);
   assert.ok(Math.hypot(actual.x - state.position.x, actual.y - state.position.y) < 0.01,
     'Fixture location was restored by the game');

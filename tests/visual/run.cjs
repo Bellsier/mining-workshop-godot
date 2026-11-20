@@ -13,7 +13,7 @@ const canvasSize = { width: 960, height: 540 };
 const workshop = { x: 128, y: 0 };
 const tunnel = { x: -76.52, y: 89.99 };
 const worldMap = 'res://scenes/world/world_map.tscn';
-const tabs = ['inventory', 'craft', 'sell', 'workers', 'research', 'delivery', 'village', 'save'];
+const tabs = ['inventory', 'mining', 'craft', 'sell', 'workers', 'research', 'delivery', 'village', 'save'];
 
 const preparation = {
   fresh: '새 세션에서 게임을 시작했습니다. 시작 월드는 게임의 새 게임 생성 결과입니다.',
@@ -69,6 +69,19 @@ function assertPanel(png, scale, visible) {
 function tabCenter(index, width, scale) {
   const left = 20 * scale;
   return left + (width - left * 2) * (index + 0.5) / tabs.length;
+}
+
+// One press mines one ore. A secured vein also yields by itself (0.4 per second per grade), and the saved stock
+// it is compared with may be up to one autosave (2 s) old.
+async function mineOnce(page, resource, grade, press, message) {
+  const before = (await readSave(page)).inventory[resource] || 0;
+  const started = Date.now();
+  await press();
+  const mined = await untilSaved(page, s => (s.inventory[resource] || 0) >= before + 1, message);
+  const gained = (mined.inventory[resource] || 0) - before;
+  const passive = 0.4 * grade * ((Date.now() - started) / 1000 + 3);
+  assert.ok(gained >= 1 && gained <= 1 + passive, 'One press mined one ' + resource + ': ' + gained);
+  return mined;
 }
 
 async function workshopTabs(page, shot, viewport, touch = false) {
@@ -136,21 +149,31 @@ async function beyondTunnel({ page, shot, details, origin }) {
     'target vein was not discovered by walking');
   assert.equal(discovered.inventory.mana || 0, 0);
   await shot('beyond-discovered-before-mining');
+  // The first E secures the vein (광맥 확보), the next one mines it.
   await page.keyboard.press('e');
-  const mined = await untilSaved(page, s => s.inventory.mana === 1,
+  await untilSaved(page, s => s.world.mines.find(m => m.id === target.id)?.developmentState === 'secured',
+    'E did not secure the vein');
+  await shot('beyond-secured');
+  const mined = await mineOnce(page, 'mana', target.grade, () => page.keyboard.press('e'),
     'one mana ore was not durably saved');
-  details.vein = { id: target.id, resource: target.resource, hiddenBefore: true, hiddenAfter: false };
+  details.vein = { id: target.id, resource: target.resource, hiddenBefore: true, hiddenAfter: false, secured: true };
   await shot('vein-mined-world');
   await page.keyboard.press('i');
   assertPanel(await shot('vein-mined-inventory'), 2, true);
   await page.reload();
   await ready(page);
+  // The save is loaded from IndexedDB after the world scene is up.
+  await page.waitForFunction(({ x, y }) => Math.hypot(window.__trial_x - x, window.__trial_y - y) < 0.01,
+    mined.position, { timeout: 20000 }).catch(() => {});
   const restored = await position(page);
   const restoredSave = await readSave(page);
   assert.ok(Math.hypot(restored.x - mined.position.x, restored.y - mined.position.y) < 0.01,
     'Reload restored committed location');
   assert.deepEqual(restoredSave.world, mined.world);
-  assert.deepEqual(restoredSave.inventory, mined.inventory);
+  // The secured vein kept yielding: nothing saved is lost, more may have come in.
+  for (const [resource, amount] of Object.entries(mined.inventory)) {
+    assert.ok((restoredSave.inventory[resource] || 0) >= amount, 'Reload kept ' + resource);
+  }
   details.restored = { ...restored, mana: restoredSave.inventory.mana,
     visibleVeins: restoredSave.world.mines.length - restoredSave.world.hiddenMineIds.length };
   await shot('reload-restored-world');
@@ -184,8 +207,13 @@ async function mobile({ page, context, shot, details, origin, viewport }) {
   await delay(350);
   assert.deepEqual(await position(page), released, 'Release stopped joystick movement');
   await shot('mobile-vein-after-stick');
+  // The first tap secures the vein (광맥 확보), the next one mines it.
   await tap(width - 60 * scale, height - 23 * scale);
-  const mined = await untilSaved(page, s => s.inventory.iron === 1,
+  await untilSaved(page, s => s.world.mines.find(m => m.id === 'mine_start_iron')?.developmentState === 'secured',
+    'touch did not secure the iron vein');
+  await shot('mobile-touch-secured');
+  const vein = (await readSave(page)).world.mines.find(m => m.id === 'mine_start_iron');
+  const mined = await mineOnce(page, 'iron', vein.grade, () => tap(width - 60 * scale, height - 23 * scale),
     'touch did not mine one iron ore');
   await shot('mobile-touch-mined');
   await tap(width - 24 * scale, 34 * scale);
