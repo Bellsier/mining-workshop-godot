@@ -289,7 +289,6 @@ func _build_hint(surface: Control) -> void:
 	_hint_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_hint_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_hint_text.max_lines_visible = 3
-	_hint_text.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_hint_text.custom_minimum_size.x = 178
 	lines.add_child(_hint_text)
 	_hint_card.hide()
