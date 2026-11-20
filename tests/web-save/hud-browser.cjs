@@ -238,7 +238,7 @@ async function desktop(browser, origin) {
     const again = await reveal(page, 'save_import');
     await page.mouse.click(again.x, again.y);
     current = await savedState(page, s => !s.legacy_web_save_sha256, 4000);
-    if (!current.legacy_web_save_sha256 || !(await hud(page, 'view')).note.includes('저장 확인 중')) break;
+    if (!current.legacy_web_save_sha256 || !(await hud(page, 'view')).note.includes('저장하는 중')) break;
     busy++;
     await delay(500);
   }

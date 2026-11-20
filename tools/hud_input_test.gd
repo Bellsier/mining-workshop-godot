@@ -673,7 +673,7 @@ func _save_tab_import() -> void:
 	_click(_center(_button_text("가져오기")))
 	await _frames(3)
 	eco._web_operation = ""
-	_check(float(eco.state.gold) == 7.0 and str(hud._panel_note.text).contains("저장 확인 중"),
+	_check(float(eco.state.gold) == 7.0 and str(hud._panel_note.text).contains("저장하는 중") and str(hud._panel_note.text).contains("한 번 더 눌러"),
 		"a 가져오기 while a save is being written is refused (%s)" % hud._panel_note.text)
 	_click(_center(_button_text("가져오기")))
 	await _frames(4)

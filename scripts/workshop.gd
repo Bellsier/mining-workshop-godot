@@ -1656,7 +1656,8 @@ func download_legacy_original() -> bool:
 
 func _import(json_text: String, bytes: PackedByteArray, origin: String) -> bool:
 	if not _web_operation.is_empty():
-		return _reject("저장 확인 중이에요. 잠시 후 다시 시도해 주세요.")
+		# the save protection: one write at a time. The draft and the stale-draft confirmation stay (workshop_hud).
+		return _reject("지금 저장하는 중이라 가져오지 않았어요. 잠시 뒤 가져오기를 한 번 더 눌러 주세요.")
 	var imported := Save.import_text(json_text, bytes, origin)
 	if imported.is_empty() or not _valid_save_state(imported):
 		return _reject("저장 JSON 형식이나 버전을 확인해 주세요.")

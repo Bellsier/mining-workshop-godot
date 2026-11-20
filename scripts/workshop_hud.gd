@@ -124,7 +124,8 @@ func _ready() -> void:
 ## window.__trial_hud_out (JSON). It only reports, except "open", which opens a tab of the menu.
 ##   "controls": the menu's controls with an id, tabs and the close button: {id, kind, text, disabled, popup,
 ##               rect [x, y, w, h] in window pixels, and for a picker with its list open, list {rect, items}};
-##   "view":     {scroll, max, rect} of the list and the note under it (the menu's last message);  "open": opens the tab named by the argument.
+##   "view":     {scroll, max, rect} of the list, the note under it (the menu's last message) and the tab open;
+##   "hud":      the world screen's own controls shown (action, bag, bar, torch, garden, hint card, save state);  "open": opens the tab named by the argument.
 var _qa_callback: JavaScriptObject
 
 func _qa_hook(args: Array) -> void:
@@ -157,7 +158,14 @@ func _qa_hook(args: Array) -> void:
 			out = list
 		"view":
 			out = {"scroll": _scroll.scroll_vertical, "max": _scroll.get_v_scroll_bar().max_value - _scroll.get_v_scroll_bar().page,
-				"rect": rect_of.call(_scroll), "redraws": redraw_stats, "note": _panel_note.text}
+				"rect": rect_of.call(_scroll), "redraws": redraw_stats, "note": _panel_note.text, "tab": _active_tab if is_workshop_open() else -1}
+		"hud":
+			var shown: Array = []
+			for pair: Array in [["action", _action], ["bag", _inventory_button], ["bar", _bar], ["torch", _torch], ["garden", _garden], ["hint", _hint_card], ["save", _save_indicator]]:
+				var c: Control = pair[1]
+				if is_instance_valid(c) and c.is_visible_in_tree():
+					shown.append({"id": pair[0], "rect": rect_of.call(c), "text": str(c.get("text")) if c.get("text") != null else ""})
+			out = shown
 	JavaScriptBridge.get_interface("window").__trial_hud_out = JSON.stringify(out)
 
 func open_workshop() -> void:
