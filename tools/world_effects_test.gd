@@ -7,7 +7,8 @@ extends SceneTree
 ## 3. In the world scene: the sway layer, the cloud shadows and the fireflies are there; securing and mining a vein
 ##    with the real interaction raises "광맥 확보!" and "+1 철광석", a second press adds up (+2), and the effect
 ##    quality's lowest step stops the sway, clouds and fireflies.
-## 4. The cabin hides the player standing behind it (and not one at its door or beside it).
+## 4. The cabin hides the player standing behind it (and not one at its door or beside it); in a dense village
+##    (every craft hut built), between two overlapping buildings only the one the player is behind is over them.
 ## 5. The "다음 할 일" card: shown with the menu closed, hidden while it is open; the first step says the first E
 ##    secures a vein.
 ## Prints "WORLD EFFECTS PASS" and exits 0, or the failures and exits 1.
@@ -149,11 +150,70 @@ func _scene() -> void:
 	for c: Array in cases:
 		player.position = cabin_at + c[0]
 		await _frames(2)
-		var hidden: bool = player.z_index < objects.buildings.z_index
-		_check(objects.player_behind() == c[1] and hidden == c[1], "player %s is %s the cabin (z %d, buildings %d)" % [c[2], "under" if c[1] else "over", player.z_index, objects.buildings.z_index])
-	_check(objects.get_node("Workers").z_index > objects.buildings.z_index, "the workers stay drawn over the buildings, as before")
+		var over: bool = objects._front.size() == 1 and (objects._occluders[objects._front[0]].rect as Rect2).has_point(cabin_at + Vector2(0, -20))
+		_check(over == c[1] and objects.player_behind() == c[1], "player %s: the cabin is %s the player" % [c[2], "over" if c[1] else "under"])
+	_check(objects.buildings.z_index < player.z_index and player.z_index < objects.buildings_front.z_index,
+		"the player is between the buildings under them and the ones over them (%d < %d < %d)" % [objects.buildings.z_index, player.z_index, objects.buildings_front.z_index])
+	_check(objects.get_node("Workers").z_index == player.z_index and objects.get_node("Workers").z_index > objects.buildings.z_index,
+		"the workers stay over the buildings and under the player, as before")
 	# the lowest effect quality stops the effects
 	light.quality = 2
 	light.force_darkness = 0.34
 	await _frames(3)
 	_check(map.get_node("Sway")._still(), "the sway stops at the lowest quality")
+	await _dense(game, eco)
+
+
+## Buildings close together (seed 1 with every craft hut built): wherever the player stands between two buildings
+## whose pictures both overlap theirs, the one they are behind is over them and the one they are in front of is not.
+func _dense(game: Node, eco: Node) -> void:
+	eco._restore({"world": World.new_game(1).to_dict(), "gold": 1.0e9,
+		"inventory": {"steel": 1.0e6, "ironTool": 1.0e6, "steelGear": 1.0e6, "manaEngine": 1.0e6, "precisionMachine": 1.0e6},
+		"completed_research": {"workshopBuild": true, "workshopExpansion": true}})
+	eco._ensure_village()
+	while eco.build_hut():
+		pass
+	change_scene_to_file("res://scenes/world/world_map.tscn")
+	await _frames(6)
+	var map: Node2D = current_scene.get_node("World")
+	var objects: Node2D = map.objects
+	var player: Node2D = map.player
+	var occ: Array = objects._occluders
+	_check(eco.world.workshops.size() >= 6, "the dense village has its craft huts (%d)" % eco.world.workshops.size())
+	var ordered := true
+	for i in range(1, occ.size()):
+		ordered = ordered and float(occ[i - 1].foot) <= float(occ[i].foot)
+	_check(ordered, "buildings are drawn north to south")
+	# every place in the village where two building pictures overlap the player's with the player between them
+	var spots: Array = []
+	var area := Rect2(occ[0].rect.position, Vector2.ZERO)
+	for o: Dictionary in occ:
+		area = area.merge(o.rect)
+	var y := area.position.y
+	while y < area.end.y + 24.0:
+		var x := area.position.x
+		while x < area.end.x:
+			var body := Rect2(Vector2(x, y) + Vector2(-8, -24), Vector2(16, 24))
+			var ahead := false
+			var behind := false
+			for o: Dictionary in occ:
+				if (o.rect as Rect2).intersects(body):
+					if y < float(o.foot):
+						behind = true
+					else:
+						ahead = true
+			if ahead and behind:
+				spots.append(Vector2(x, y))
+			x += 4.0
+		y += 4.0
+	_check(not spots.is_empty(), "the dense village has places between two overlapping buildings (%d)" % spots.size())
+	var wrong := 0
+	for at: Vector2 in spots:
+		player.position = at
+		await _frames(1)
+		var body := Rect2(at + Vector2(-8, -24), Vector2(16, 24))
+		for i in occ.size():
+			var o: Dictionary = occ[i]
+			if (o.rect as Rect2).intersects(body) and ((i in objects._front) != (at.y < float(o.foot))):
+				wrong += 1
+	_check(wrong == 0, "between two buildings, only the one the player is behind is over the player (%d wrong of %d places)" % [wrong, spots.size()])
