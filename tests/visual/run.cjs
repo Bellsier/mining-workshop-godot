@@ -20,6 +20,7 @@ const preparation = {
   closed: '시드 42의 닫힌 터널 앞 테스트 저장에서 시작합니다.',
   open: '시드 42의 개통 완료 테스트 저장을 사용합니다. 브라우저에서 600초를 기다리지 않습니다.',
   mobile: '시드 42의 고정 테스트 저장을 공방 앞에서 불러옵니다. 이후 이동과 메뉴 조작은 터치 입력입니다.',
+  dusk: '시드 42의 공방 앞 저장을 불러오고, 페이지 시계를 해질녘(8분 주기의 가장 어두운 때)에 맞춥니다.',
 };
 
 const results = {
@@ -221,10 +222,23 @@ async function mobile({ page, context, shot, details, origin, viewport }) {
   details.touch = { released, inventory: mined.inventory };
 }
 
+// The same corner of the world at dusk (the page's clock set to the darkest point of the 8-minute cycle): the
+// cabin's lit windows, the vein sprites, the swaying trees and the fireflies. A capture for review; the scenario
+// fails on browser errors only.
+async function dusk({ page, shot, details, origin }) {
+  await prepareSave(page, origin, worldSave(workshop, false));
+  await delay(1500);
+  await shot('dusk-workshop');
+  await holdKey(page, 's', () => delay(700));
+  await shot('dusk-meadow');
+  details.clock = 'dusk';
+}
+
 const matrix = [
   { id: 'desktop-workshop', viewport: canvasSize, setup: 'fresh', run: freshWorkshop },
   { id: 'desktop-closed-tunnel', viewport: canvasSize, setup: 'closed', run: closedTunnel },
   { id: 'desktop-beyond', viewport: canvasSize, setup: 'open', run: beyondTunnel },
+  { id: 'desktop-dusk', viewport: canvasSize, setup: 'dusk', run: dusk },
   ...[{ width: 844, height: 390 }, { width: 568, height: 320 }].map(viewport => ({
     id: 'mobile-' + viewport.width + 'x' + viewport.height,
     viewport, setup: 'mobile', run: mobile,
@@ -253,6 +267,10 @@ async function runCase(browser, origin, test) {
     // The test runner may only visit its own game server.
     await context.route('**/*', route => route.request().url().startsWith(origin + '/') ?
       route.continue() : route.abort());
+    if (setup === 'dusk') {
+      // the dusk cycle follows the clock (web TD_LIGHT.CYCLE_MS 8 min, darkest half way)
+      await context.addInitScript(() => { const real = Date.now.bind(Date), shift = 240000 - (real() % 480000); Date.now = () => real() + shift; });
+    }
     page = await context.newPage();
     page.setDefaultTimeout(12000);
     page.on('console', msg => {

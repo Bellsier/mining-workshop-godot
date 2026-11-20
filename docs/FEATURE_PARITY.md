@@ -70,8 +70,9 @@ Godot: `Bellsier/mining-workshop-godot` 브랜치 `claude/modest-mendel-yvz6iv` 
 | 상호작용 대상 고르기 (1.15 범위, 문 앞 가산, 바라보는 방향) | interact.js `tdInteractTarget` | 완료 | `world_map.gd find_target` |
 | 횃불 놓기·줍기 (최대 12, 간격·문·광맥 규칙) | player.js `torchAct` | 완료 | T 키·터치 버튼 |
 | 빛: 8분 해질녘 순환, 등불·창·대장간·광맥·횃불·일꾼·시설·광장·집·석등 빛, 프레임에 따른 품질 단계 | light.js `tdRenderLighting`, `tdLightList`, `tdQualityFor` | 완료 | `world_light.gd`: 원본처럼 작은 빛 지도(화면의 0.34·0.25·0.2) 한 장에 어둠·빛 구멍·색 빛을 그려 한 번 덮음 · world_objects_test |
-| 구름 그림자·반딧불·풀 흔들림 | light.js `tdCloudShadows`, `tdFireflies`, render.js `tdSway` | **미구현** | 순수 장식 효과. 후속 그래픽 단계 |
+| 구름 그림자·반딧불·풀 흔들림 | light.js `tdCloudShadows`, `tdFireflies`, render.js `tdSway`, `tdDrawSway` | 완료 | `world_light.gd` 구름·반딧불, `world_sway.gd` 나무·풀 · 원본 함수로 만든 기준값과 비교(world_effects_test, `tools/parity/make_effects_fixtures.cjs`). 품질 단계: 반딧불 0단계만, 구름·흔들림 2단계에서 끔 |
 | 미니맵 | render.js `tdRenderMinimap` | 완료 | `world_minimap.gd` |
+| 행동 위치에서 떠오르는 글자(+1 철광석, 같은 단위는 합산, 한 지점 3줄) | render.js `tdAddFloat`, `TD_FLOAT` | 완료 | `world_floats.gd`: 광맥 확보·채굴·새 광맥 발견. 그 밖의 행동은 화면 아래 알림 |
 | 플레이어 이동 속도 3단위/초 | balance.js `PLAYER_SPEED` | 완료 | 72 → 192 px/s |
 | 모서리 미끄러짐(CORNER_SLIP) | player.js `worldStepFoot` | **부분** | Godot 물리(move_and_slide)로 미끄러짐. 수치 동일성은 미보장 |
 | 256 시험 월드 | worldchunks.js | 해당 없음 | Godot에 생성기는 있음(시험용), 일반 플레이에서 노출 안 함 |
@@ -81,12 +82,12 @@ Godot: `Bellsier/mining-workshop-godot` 브랜치 `claude/modest-mendel-yvz6iv` 
 | 원본 기능 | 원본 위치 | 상태 | Godot 위치 |
 |---|---|---|---|
 | 탭: 채굴·개발·인부·연구·납품·마을 | index.html | 완료 | 가방·채굴·제작·판매·인부·연구·납품·마을·저장 (개발 = 제작+판매) |
-| 다음 할 일 안내 | ui.js `updateNextHint` | 완료 | 채굴 탭 위 |
+| 다음 할 일 안내 | ui.js `updateNextHint`, style.css `.next-hint` | 완료 | 월드 화면 왼쪽 위 "다음 할 일" 카드(메뉴를 열면 숨김, 플레이어가 아래로 지나가면 흐려짐)와 채굴 탭 위. 첫 단계 문구는 광맥 확보를 먼저 안내(Godot 보완) |
 | 기록(최근 40개) | systems.js `log` | 완료 | 가방 탭 아래 |
 | 키보드: 이동·E/Space·T·R·Q·Esc·I | app.js | 완료 | |
 | 터치: 이동 스틱·행동 버튼·횃불 버튼·정원 버튼 | app.js | 완료 | |
 | 클래식 화면의 월드 클릭 정보 패널 | ui.js `renderWorldInfo` | 해당 없음 | 원본 클래식 화면 전용. 탑다운 화면은 E 대상 표시로 대신함 |
-| 캐릭터·건물·광맥 그림 | sprites.js, style.js, hires.js | **부분** | 코드로 그린 단순 도형. 원본 픽셀 스프라이트와 시각 일치는 후속 그래픽 단계 |
+| 캐릭터·건물·광맥 그림 | sprites.js, style.js, hires.js | **부분** | 원본 사각형 페인터를 이식(`world_sprites.gd`): 공방 오두막(`tdBaseSprite`), 광맥(`tdOreSprite`: 숨김·발견·확보 깃발), 풍경(`tdPropSprite`). 제작소·마을 시설·집·장식·횃불·플레이어(`tdWorkshopSprite`, `tdVillageSprite` 등)는 아직 코드 도형·기존 그림 |
 | 저장 · 마을 메뉴: 마을 여러 개, 마을별 자동 저장, 수동 슬롯 5개 | save-runtime.js, save-engine.js (S2) | **미구현** | Godot는 단일 슬롯 + 가져오기·내보내기·보호 저장. 여러 슬롯은 저장 구조 변경이라 디렉터 결정 필요 |
 | 화면 크기·방향 대응 | style.css | 부분 | 480×270 확대(expand). 세로 화면 별도 배치 없음 |
 
