@@ -9,8 +9,9 @@ static func reputation_multiplier(data: Dictionary, state: Dictionary) -> float:
 	var rules := _rules(data, "reputation")
 	var points := mini(reputation(data, state), int(rules.get("MAX", 36)))
 	var soft_cap := int(rules.get("MULT_SOFT_AT", 18))
-	return 1.0 + mini(points, soft_cap) * float(rules.get("MULT_PER_POINT", 0.12)) \
-		+ maxi(0, points - soft_cap) * float(rules.get("MULT_PER_POINT_SOFT", 0.045))
+	# web mult(): 1 + reputationMultiplierBonus(), the bonus summed first (floating-point addition is not associative).
+	return 1.0 + (mini(points, soft_cap) * float(rules.get("MULT_PER_POINT", 0.12)) \
+		+ maxi(0, points - soft_cap) * float(rules.get("MULT_PER_POINT_SOFT", 0.045)))
 
 
 static func reputation_effect(data: Dictionary, state: Dictionary, id: String) -> float:
@@ -120,7 +121,8 @@ static func tick(data: Dictionary, state: Dictionary, delta: float, economy_mult
 		else:
 			progress["orderTimer"] = float(progress["orderTimer"]) + delta
 			if float(progress["orderTimer"]) >= arrival:
-				progress["orderTimer"] = fmod(float(progress["orderTimer"]), arrival)
+				# Original tickOrders: the timer restarts at 0 when an order is issued; overflow is not carried.
+				progress["orderTimer"] = 0.0
 				var order := _next_order(data, state, company, progress)
 				if not order.is_empty():
 					orders.append(order)
@@ -228,10 +230,12 @@ static func _next_order(data: Dictionary, state: Dictionary, company: Dictionary
 		return _fixed_order(fixed, order_index)
 	if fixed.is_empty() or (order_index < fixed.size() and (open.is_empty() or order_index < 1)):
 		return {}
+	# Original repeatCandidates: favorite recipes whose raw resources are all in unlocked areas.
+	# Stock does not count: a material from a locked area in the bag does not open a repeat order.
 	var candidates: Array[String] = []
-	var inventory: Dictionary = state.get("inventory", {})
 	for product: String in company.get("favorites", []):
-		if _can_source(data, state, inventory, product, []):
+		var recipe := _recipe(data, product)
+		if not recipe.is_empty() and not _needs_locked_resource(data, state, recipe, []):
 			candidates.append(product)
 	if candidates.is_empty():
 		return {}
@@ -249,23 +253,28 @@ static func _next_order(data: Dictionary, state: Dictionary, company: Dictionary
 	return {"product": product, "qty": qty, "index": -1}
 
 
-static func _can_source(data: Dictionary, state: Dictionary, inventory: Dictionary, product: String, chain: Array) -> bool:
-	if chain.has(product):
-		return false
-	var recipe := _recipe(data, product)
-	if recipe.is_empty():
-		var unlocked := _as_dictionary(state.get("unlocked_sites", state.get("unlockedSites")))
-		for resource: Dictionary in data.get("resources", []):
-			if resource.get("key") == product:
-				var site := String(resource.get("site", ""))
-				return bool(unlocked.get(site, false)) or float(inventory.get(product, 0)) > 0.0
-		return false
-	var ingredients: Dictionary = recipe.get("need", {})
-	var next_chain := chain + [product]
-	for ingredient: String in ingredients:
-		if not _can_source(data, state, inventory, ingredient, next_chain):
-			return false
-	return true
+## recipeNeedsLockedResource: any raw resource under the recipe (sub-recipes followed once each,
+## unknown keys ignored) whose site is not unlocked.
+static func _needs_locked_resource(data: Dictionary, state: Dictionary, recipe: Dictionary, seen: Array) -> bool:
+	var unlocked := _as_dictionary(state.get("unlocked_sites", state.get("unlockedSites")))
+	for ingredient: String in _as_dictionary(recipe.get("need")):
+		var resource := _resource(data, ingredient)
+		if not resource.is_empty():
+			if not bool(unlocked.get(String(resource.get("site", "")), false)):
+				return true
+			continue
+		var sub := _recipe(data, ingredient)
+		if not sub.is_empty() and not seen.has(ingredient):
+			if _needs_locked_resource(data, state, sub, seen + [ingredient]):
+				return true
+	return false
+
+
+static func _resource(data: Dictionary, id: String) -> Dictionary:
+	for resource: Dictionary in data.get("resources", []):
+		if resource.get("key") == id:
+			return resource
+	return {}
 
 
 static func _regular_trade(data: Dictionary, state: Dictionary, company: Dictionary, progress: Dictionary, delta: float, economy_multiplier: float) -> String:
@@ -294,20 +303,103 @@ static func _regular_trade(data: Dictionary, state: Dictionary, company: Diction
 
 
 static func _apply_shipment(data: Dictionary, state: Dictionary, company: Dictionary, progress: Dictionary, recipe: Dictionary, qty: int, cost: int) -> void:
-	var rules := _rules(data, "delivery")
 	var inventory: Dictionary = state["inventory"]
 	var sent: Dictionary = progress["sent"]
 	var product := String(recipe["key"])
 	var previous_qty := float(sent.get(product, 0))
+	progress["score"] = float(progress["score"]) + _score(data, company, progress, recipe, qty)
+	sent[product] = previous_qty + qty
+	inventory[product] = float(inventory[product]) - qty
+	state["gold"] = float(state["gold"]) - cost
+
+
+## The score `qty` of a product adds for a company (web deliveryScore): each unit weighs less the more of it was
+## already sent (down to REPEAT_MIN_WEIGHT), favourites count FAVORITE_MULT times.
+static func _score(data: Dictionary, company: Dictionary, progress: Dictionary, recipe: Dictionary, qty: int) -> float:
+	var rules := _rules(data, "delivery")
+	var previous_qty := float(_as_dictionary(progress.get("sent")).get(String(recipe["key"]), 0))
 	var decay := float(rules.get("REPEAT_DECAY_UNITS", 200))
 	var floor_weight := float(rules.get("REPEAT_MIN_WEIGHT", 0.25))
 	var weighted_units := minf(qty, maxf(0.0, decay * (1.0 - floor_weight) - previous_qty))
 	var slope := weighted_units * (1.0 - previous_qty / decay) - weighted_units * (weighted_units - 1.0) / (2.0 * decay)
-	var favorite := float(rules.get("FAVORITE_MULT", 1.5)) if company["favorites"].has(product) else 1.0
-	progress["score"] = float(progress["score"]) + (slope + (qty - weighted_units) * floor_weight) * float(recipe["sell"]) * favorite
-	sent[product] = previous_qty + qty
-	inventory[product] = float(inventory[product]) - qty
-	state["gold"] = float(state["gold"]) - cost
+	var favorite := float(rules.get("FAVORITE_MULT", 1.5)) if company["favorites"].has(String(recipe["key"])) else 1.0
+	return (slope + (qty - weighted_units) * floor_weight) * float(recipe["sell"]) * favorite
+
+
+## The 납품 tab's company cards (web renderDelivery, companyClosedReason, companyScoreText, tradeStatusText) and
+## reputation effects (renderReputation). `trade_interval` is the regular trade's interval (빠른 거래 shortens it).
+static func companies_view(data: Dictionary, state: Dictionary, trade_interval: float) -> Dictionary:
+	var research: Dictionary = state.get("completed_research", {})
+	var open_ids := {}
+	for company: Dictionary in _open_companies(data, state):
+		open_ids[company["key"]] = true
+	var rep := reputation(data, state)
+	var thresholds: Array = _rules(data, "delivery").get("SLOT_THRESHOLDS", [0, 5, 15])
+	var slots := 0
+	for threshold: Variant in thresholds:
+		if rep >= int(threshold):
+			slots += 1
+	var companies: Array = data.get("companies", [])
+	slots = clampi(slots, 1, companies.size())
+	var world := _as_dictionary(state.get("world"))
+	var tunnel_open := bool(state.get("tunnel_open", world.get("tunnelUnlocked", false)))
+	var progress_all := _company_progress(data, state)
+	var reserve := float(_rules(data, "delivery").get("TRADE_RESERVE", 10))
+	var inventory: Dictionary = state.get("inventory", {})
+	var cards: Array = []
+	for i in companies.size():
+		var company: Dictionary = companies[i]
+		var id := String(company["key"])
+		var favorites: Array = []
+		for k: String in company["favorites"]:
+			favorites.append(String(_recipe(data, k).get("name", k)))
+		var card := {"id": id, "name": company["name"], "desc": company["desc"], "open": open_ids.has(id), "closed": "",
+			"favorites": favorites, "score": ""}
+		if not card.open:
+			if not bool(research.get("deliveryContract", false)):
+				card.closed = "연구 탭에서 \"납품 계약\"을 연구하면 만날 수 있어요."
+			elif i >= slots:
+				card.closed = "명성 %d점이 되면 거래할 수 있어요. (현재 %d점)" % [int(thresholds[i]), rep]
+			elif bool(company.get("needsTunnel", false)) and not tunnel_open:
+				card.closed = "터널이 뚫려야 닿을 수 있어요. (연구 \"터널 굴착\" 후 공사를 의뢰하세요)"
+			cards.append(card)
+			continue
+		var progress: Dictionary = progress_all[id]
+		var score := "점수 %d / %d" % [floori(float(progress["score"])), int(company["regularScore"])]
+		if float(progress["score"]) >= float(company["regularScore"]):
+			var left := maxf(0.0, trade_interval - float(progress["tradeTimer"]))
+			var product := ""
+			for k: String in company["favorites"]:
+				if float(inventory.get(k, 0)) >= reserve + 1.0:
+					product = k
+					break
+			var when := "%d초 뒤 거래" % ceili(left) if left > 0.0 else ("곧 거래" if not product.is_empty() else "선호 제품을 기다리는 중")
+			score += " · 정기 거래 중 (%s)" % when
+		card.score = score
+		cards.append(card)
+	var effects: Array = []
+	for effect: Dictionary in data.get("reputation_effects", []):
+		var opened := rep >= int(effect.get("unlock", 0))
+		var text := "명성 %d점에서 열려요" % int(effect.get("unlock", 0))
+		if opened:
+			if effect.get("unit") == "multiplier":
+				text = "×%.2f" % reputation_multiplier(data, state)
+			else:
+				var size := reputation_effect(data, state, String(effect["key"]))
+				text = ("-" if effect["key"] == "shippingDiscount" else "+") + "%d%%" % roundi(size * 100.0)
+		effects.append({"name": effect["name"], "text": text, "desc": effect["desc"], "open": opened})
+	return {"companies": cards, "effects": effects}
+
+
+## What a free delivery of `qty` of a product to a company would cost and add (web deliveryPreviewText).
+static func preview(data: Dictionary, state: Dictionary, company_id: String, product: String, qty: int) -> Dictionary:
+	var recipe := _recipe(data, product)
+	var company := _company(data, company_id)
+	if recipe.is_empty() or company.is_empty() or qty <= 0:
+		return {}
+	var progress: Dictionary = _company_progress(data, state)[company_id]
+	return {"cost": _shipping_cost(data, state, company, recipe, qty), "score": _score(data, company, progress, recipe, qty),
+		"have": float(state.get("inventory", {}).get(product, 0))}
 
 
 static func _shipping_cost(data: Dictionary, state: Dictionary, company: Dictionary, recipe: Dictionary, qty: int) -> int:
@@ -369,7 +461,8 @@ static func _nonnegative(value: Variant) -> float:
 	if not value is float and not value is int:
 		return 0.0
 	var number := float(value)
-	return maxf(0.0, number) if is_finite(number) else 0.0
+	# Kept below 2^53 so the int() conversions of counts stay exact (int() of 1e300 is INT64_MIN).
+	return clampf(number, 0.0, 9007199254740992.0) if is_finite(number) else 0.0
 
 
 static func _result(ok: bool, message: String) -> Dictionary:

@@ -16,7 +16,7 @@ func _ready() -> void:
 func _input(event: InputEvent) -> void:
 	if not visible:
 		return
-	if get_node("/root/Game").workshop_is_open():
+	if get_node("/root/Game").world_input_blocked():
 		if _finger != -1:
 			_finger = -1
 			_origin = Vector2(56, get_viewport_rect().size.y - 56)

@@ -25,26 +25,63 @@ static func T() -> Dictionary:
 static func B() -> Dictionary:
 	return WorldData.world()
 
-static func in_bounds(x: float, y: float) -> bool:
+## The numbers the point tests below need, read from the catalog once (they are asked for thousands of times
+## per village layout and every physics step). Same values and comparisons as reading the catalog each time.
+static var _cached := false
+static var _min_x := 0.0
+static var _max_x := 0.0
+static var _min_y := 0.0
+static var _max_y := 0.0
+static var _face_y0 := PackedFloat64Array()
+static var _face_y1 := PackedFloat64Array()
+static var _face_x := PackedFloat64Array()
+static var _tunnel_y := 0.0
+static var _tunnel_half := 0.0
+static var _tunnel_depth := 0.0
+static var _range_width := 0.0
+static var _margin := 0.0
+
+static func _cache() -> void:
 	var b := B()
-	return x >= b.BOUNDS_MIN_X and x <= b.BOUNDS_MAX_X and y >= b.BOUNDS_MIN_Y and y <= b.BOUNDS_MAX_Y
+	var t := T()
+	_min_x = b.BOUNDS_MIN_X
+	_max_x = b.BOUNDS_MAX_X
+	_min_y = b.BOUNDS_MIN_Y
+	_max_y = b.BOUNDS_MAX_Y
+	for seg: Dictionary in t.FACE:
+		_face_y0.append(seg.y0)
+		_face_y1.append(seg.y1)
+		_face_x.append(seg.x)
+	_tunnel_y = t.TUNNEL.Y
+	_tunnel_half = t.TUNNEL.HALF_WIDTH
+	_tunnel_depth = t.TUNNEL.DEPTH
+	_range_width = t.RANGE_WIDTH
+	_margin = t.PLAYER_MARGIN
+	_cached = true
+
+static func in_bounds(x: float, y: float) -> bool:
+	if not _cached:
+		_cache()
+	return x >= _min_x and x <= _max_x and y >= _min_y and y <= _max_y
 
 ## Face x of the solid rock at row y, ignoring the tunnel recess.
 static func rock_face_x(y: float) -> float:
-	var face: Array = T().FACE
-	for seg: Dictionary in face:
-		if y >= seg.y0 and y < seg.y1:
-			return seg.x
-	return face[face.size() - 1].x
+	if not _cached:
+		_cache()
+	for i in _face_x.size():
+		if y >= _face_y0[i] and y < _face_y1[i]:
+			return _face_x[i]
+	return _face_x[_face_x.size() - 1]
 
 static func in_tunnel_rows(y: float) -> bool:
-	var t: Dictionary = T().TUNNEL
-	return absf(y - t.Y) <= t.HALF_WIDTH
+	if not _cached:
+		_cache()
+	return absf(y - _tunnel_y) <= _tunnel_half
 
 ## Where walking stops at row y while the tunnel is closed: the rock face or the gate at the back of the recess.
 static func face_x(y: float) -> float:
 	var rock := rock_face_x(y)
-	return rock - T().TUNNEL.DEPTH if in_tunnel_rows(y) else rock
+	return rock - _tunnel_depth if in_tunnel_rows(y) else rock
 
 static func tunnel(tunnel_open: bool) -> Dictionary:
 	var t: Dictionary = T().TUNNEL
@@ -53,7 +90,7 @@ static func tunnel(tunnel_open: bool) -> Dictionary:
 
 ## West (back) edge of the range at row y: where "beyond" starts.
 static func range_back_x(y: float) -> float:
-	return rock_face_x(y) - T().RANGE_WIDTH
+	return rock_face_x(y) - _range_width
 
 ## The tunnel's far exit on the back edge of the range: the one way into "beyond".
 static func tunnel_exit() -> Vector2:
@@ -86,7 +123,7 @@ static func is_point_walkable(x: float, y: float, tunnel_open: bool) -> bool:
 		return false
 	if not in_bounds(x, y):
 		return false
-	var margin: float = T().PLAYER_MARGIN
+	var margin := _margin
 	if x >= face_x(y) + margin:
 		return true
 	if not tunnel_open:

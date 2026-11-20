@@ -32,7 +32,9 @@ func _physics_process(_dt: float) -> bool:
 				g.state.gold = 6000.0
 				g.state.inventory["alloy"] = 5.0
 				if not g.unlock("tunnelWork") or not g.order_tunnel(): return _fail("commission")
-				for i in 6000: g._tick()
+				# The job runs on real time (web tunnelContract): move the game's clock past its 600 s.
+				g.clock_override_ms = g.now_ms() + 600000.0
+				g._tick()
 				step = 2
 				frames = 0
 		2:

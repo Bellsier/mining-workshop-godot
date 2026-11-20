@@ -5,6 +5,7 @@ extends RefCounted
 ##   base {x, y, level}, mines [...], hiddenMineIds [...], tunnelUnlocked, and for the seeded world
 ##   seed, size, generatorVersion, chunkEditsVersion, chunkEdits.
 ## Godot adds `layoutSeed`: the seed the new-game layout was drawn with (the web used Math.random).
+## `workshops` are the craft huts (제작소), kept in the web shape; their rules are in scripts/craft_huts.gd.
 ##
 ## One instance is shared by every scene through Engine meta (current / set_current), so it survives scene
 ## changes. Saving it is left to the save system (see docs/WORLD_MIGRATION.md).
@@ -14,6 +15,7 @@ const WorldTerrain := preload("res://scripts/world/world_terrain.gd")
 const WorldGen := preload("res://scripts/world/world_gen.gd")
 const ChunkGen := preload("res://scripts/world/chunk_gen.gd")
 const WorldRandom := preload("res://scripts/world/world_random.gd")
+const CraftHuts := preload("res://scripts/craft_huts.gd")
 const SELF_PATH := "res://scripts/world/world_state.gd"
 
 const META_KEY := "mining_world_state"
@@ -35,6 +37,12 @@ var base := Vector2i(2, 0)
 var base_level := 1
 var mines: Array = []
 var hidden_ids: Array[String] = []
+## Craft huts (web state.world.workshops): {id, x, y, level, recipeKey, auto, progress}.
+var workshops: Array = []
+## Torches the player set down (web state.world.torches): {x, y}.
+var torches: Array = []
+## The tunnel construction job (web state.world.tunnelContract): {startedAt (ms), durationSec}, or {} for none.
+var tunnel_contract: Dictionary = {}
 var tunnel_unlocked := false
 var exploration_gear := false
 ## Seeded outer world (web 256 test world). Empty when off.
@@ -97,6 +105,7 @@ func unlock_tunnel() -> Array:
 	if tunnel_unlocked:
 		return []
 	tunnel_unlocked = true
+	tunnel_contract = {}
 	var added := WorldGen.generate_beyond_mines(mines, _random())
 	for m: Dictionary in added:
 		mines.append(m)
@@ -111,6 +120,40 @@ func run_survey() -> Array:
 		mines.append(m)
 		hidden_ids.append(m.id)
 	survey_completed.emit(added)
+	return added
+
+# --- securing and site seeds ---------------------------------------------------------------------------
+
+## Marks a vein secured (web secureMine; the caller checks it is found and its area open).
+func secure(id: String) -> bool:
+	var m := mine_by_id(id)
+	if m.is_empty() or m.get("developmentState") != "unsecured":
+		return false
+	m.developmentState = "secured"
+	_record_edit(id)
+	return true
+
+## A site's seed veins at their offsets from the base, unhidden, where no vein stands yet
+## (web seedWorldMinesForSite / addMine: a taken id gets a new one). Returns the veins added.
+func seed_site(site: String, seeds: Array) -> Array:
+	var added: Array = []
+	for seed: Dictionary in seeds:
+		var x := base.x + int(seed.x)
+		var y := base.y + int(seed.y)
+		if mines.any(func(m: Dictionary) -> bool: return int(m.x) == x and int(m.y) == y):
+			continue
+		if not CraftHuts.is_valid_cell(x, "x", is_seeded()) or not CraftHuts.is_valid_cell(y, "y", is_seeded()):
+			continue
+		var id := "mine_%s_%s" % [site, seed.resource]
+		if not mine_by_id(id).is_empty():
+			var taken := {}
+			for m: Dictionary in mines:
+				taken[m.id] = true
+			id = CraftHuts.new_id(taken, "mine_")
+		var vein := {"id": id, "x": x, "y": y, "resource": str(seed.resource), "grade": int(seed.grade),
+			"miningPower": int(seed.miningPower), "developmentState": "unsecured"}
+		mines.append(vein)
+		added.append(vein)
 	return added
 
 # --- discovery ------------------------------------------------------------------------------------------
@@ -276,7 +319,9 @@ func to_dict() -> Dictionary:
 		if not _generated_ids.has(id):
 			saved_hidden.append(id)
 	var d := {"layoutSeed": layout_seed, "base": {"x": base.x, "y": base.y, "level": base_level},
-		"mines": saved_mines, "hiddenMineIds": saved_hidden, "tunnelUnlocked": tunnel_unlocked}
+		"mines": saved_mines, "hiddenMineIds": saved_hidden, "tunnelUnlocked": tunnel_unlocked,
+		"workshops": workshops.duplicate(true), "torches": torches.duplicate(true),
+		"tunnelContract": tunnel_contract.duplicate() if not tunnel_contract.is_empty() else null}
 	if is_seeded():
 		for k in seeded:
 			d[k] = seeded[k].duplicate(true) if seeded[k] is Dictionary else seeded[k]
@@ -322,4 +367,42 @@ static func from_dict(d: Dictionary) -> RefCounted:
 		if ChunkGen.is_valid_context(ctx):
 			s.seeded = {"seed": int(d.seed), "size": SEEDED_SIZE, "generatorVersion": ctx.generatorVersion,
 				"chunkEditsVersion": 1, "chunkEdits": (d.get("chunkEdits", {}) as Dictionary).duplicate(true)}
+	s.workshops = CraftHuts.sanitize(d.get("workshops", []), _recipe_table(), s.is_seeded())
+	s.torches = sanitize_torches(d.get("torches", []), s.is_seeded())
+	s.tunnel_contract = {} if s.tunnel_unlocked else sanitize_contract(d.get("tunnelContract"))
 	return s
+
+## web sanitizeTorches: finite points inside the world, at most TORCH.MAX, kept exactly as saved.
+static func sanitize_torches(raw: Variant, seeded := false) -> Array:
+	var out: Array = []
+	if not raw is Array:
+		return out
+	var cap := int(WorldData.catalog().get("torch", {}).get("MAX", 12))
+	for t: Variant in raw:
+		if out.size() >= cap:
+			break
+		if not t is Dictionary or not _finite(t.get("x")) or not _finite(t.get("y")):
+			continue
+		var x := float(t.x)
+		var y := float(t.y)
+		if WorldTerrain.in_bounds(x, y) or (seeded and absf(x) < SEEDED_EDGE and absf(y) < SEEDED_EDGE):
+			out.append({"x": x, "y": y})
+	return out
+
+## web sanitizeTunnelContract: a start time and a positive duration, or nothing.
+static func sanitize_contract(raw: Variant) -> Dictionary:
+	if not raw is Dictionary or not _finite(raw.get("startedAt")) or not _finite(raw.get("durationSec")):
+		return {}
+	if float(raw.startedAt) < 0.0 or float(raw.durationSec) <= 0.0:
+		return {}
+	return {"startedAt": float(raw.startedAt), "durationSec": float(raw.durationSec)}
+
+static func _finite(v: Variant) -> bool:
+	return (v is int or v is float) and is_finite(float(v))
+
+## Recipe rows by key, for checking a saved hut's recipe.
+static func _recipe_table() -> Dictionary:
+	var table := {}
+	for row: Dictionary in WorldData.catalog().get("recipes", []):
+		table[row.key] = row
+	return table

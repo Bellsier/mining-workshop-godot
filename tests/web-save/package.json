@@ -1,0 +1,10 @@
+{
+  "name": "mining-workshop-save-qa",
+  "private": true,
+  "scripts": {
+    "test": "node run.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.59.0"
+  }
+}

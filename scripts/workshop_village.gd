@@ -1,5 +1,8 @@
 extends RefCounted
 
+const WorldTerrain := preload("res://scripts/world/world_terrain.gd")
+const WorldData := preload("res://scripts/world/world_data.gd")
+
 static func load_progress(source: Variant) -> Dictionary:
 	var input: Dictionary = source if source is Dictionary else {}
 	var result := {"stage": {}, "unidentified": 0, "digProgress": 0, "appraised": 0,
@@ -12,7 +15,48 @@ static func load_progress(source: Variant) -> Dictionary:
 			result[key] = value.duplicate(true)
 		elif (value is int or value is float) and result[key] is int:
 			result[key] = maxi(0, int(value))
+	# Where the village stands (web sanitizeVillageSite / District / Decor). Missing = chosen again on load.
+	var sites: Dictionary = input.get("sites") if input.get("sites") is Dictionary else {}
+	result["sites"] = {"appraiser": _site(sites.get("appraiser")), "museum": _site(sites.get("museum"))}
+	result["district"] = _district(input.get("district"))
+	result["decor"] = _decor(input.get("decor"))
 	return result
+
+static func _site(raw: Variant) -> Variant:
+	if not raw is Dictionary or not _finite(raw.get("x")) or not _finite(raw.get("y")) or not WorldTerrain.in_bounds(float(raw.x), float(raw.y)):
+		return null
+	return {"x": float(raw.x), "y": float(raw.y)}
+
+static func _district(raw: Variant) -> Variant:
+	var site: Variant = _site(raw)
+	if site == null:
+		return null
+	var layout: Variant = raw.get("layout")
+	var layouts: int = WorldData.catalog().village.DISTRICT.LAYOUTS.size()
+	if not _finite(layout) or floorf(float(layout)) != float(layout) or float(layout) < 0.0 or float(layout) >= layouts:
+		return null
+	return {"x": site.x, "y": site.y, "layout": int(layout)}
+
+static func _decor(raw: Variant) -> Array:
+	var out: Array = []
+	if not raw is Array:
+		return out
+	var V: Dictionary = WorldData.catalog().village
+	var kinds: Array = V.DECOR.map(func(d: Dictionary) -> String: return d.key)
+	var cells := int(V.GARDEN.COLS) * int(V.GARDEN.ROWS)
+	var used := {}
+	for d: Variant in raw:
+		if not d is Dictionary or not d.get("kind") is String or not d.kind in kinds or not _finite(d.get("cell")):
+			continue
+		var cell := float(d.cell)
+		if floorf(cell) != cell or cell < 0.0 or cell >= cells or used.has(int(cell)):
+			continue
+		used[int(cell)] = true
+		out.append({"kind": d.kind, "cell": int(cell)})
+	return out
+
+static func _finite(v: Variant) -> bool:
+	return (v is int or v is float) and is_finite(float(v))
 
 static func is_open(data: Dictionary, progress: Dictionary, id: String) -> bool:
 	var facility: Dictionary = data.village.FACILITIES.get(id, {})

@@ -60,7 +60,14 @@ func _run() -> void:
 	game.state.inventory.merge({"steel": 50.0, "coalBrick": 4.0, "ironTool": 5.0, "iron": 30.0}, true)
 	_expect(not game.restore_facility("museum"), "museum needs appraiser")
 	_expect(game.restore_facility("appraiser") and game.restore_facility("appraiser"), "appraiser restoration")
-	_expect(game.appraise_relic("appraiser") and game.state.village.codex.size() == 1, "manual mining relics and appraisal")
+	# Relics turn up while mining a secured vein in the world (web mineMine), not from the mining tab's button.
+	var vein: Dictionary = game.world.mines.filter(func(m: Dictionary) -> bool: return m.resource == "iron")[0]
+	game.world.discover(vein.id)
+	_expect(game.secure_vein(vein.id), "secure an iron vein")
+	for index in 30:
+		game.mine_vein(vein.id)
+	_expect(game.state.village.unidentified > 0, "mining a vein turns up relics")
+	_expect(game.appraise_relic("appraiser") and game.state.village.codex.size() == 1, "relic appraisal")
 	_expect(game.restore_facility("museum") and game.restore_facility("museum"), "museum restoration")
 	if not game.state.village.codex.is_empty():
 		var relic: String = game.state.village.codex[0]
