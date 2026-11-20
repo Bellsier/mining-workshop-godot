@@ -48,7 +48,9 @@ async function serve() {
 // Hold, abort or refuse the game's real transactions. These hooks never alter the game data.
 function installFaults(options) {
   const put = IDBObjectStore.prototype.put;
-  window.qaWrites = { puts: 0, targets: [], fail: 0, quota: 0, delays: {}, released: {}, attempted: 0, aborted: 0, committed: 0 };
+  // commits: what each committed targeted write held (its mark), in order, and the save state the game showed at
+  // that moment (the game's own complete handler runs first and updates it), so a check is not raced by later commits.
+  window.qaWrites = { puts: 0, targets: [], fail: 0, quota: 0, delays: {}, released: {}, attempted: 0, aborted: 0, committed: 0, commits: [] };
   const transaction = IDBDatabase.prototype.transaction;
   IDBDatabase.prototype.transaction = function (stores, mode, txOptions) {
     if (this.name === 'mining-workshop-godot' && mode === 'readwrite' && window.qaWrites.forceRelaxed) {
@@ -89,7 +91,10 @@ function installFaults(options) {
     }
     const request = put.call(this, value, key);
     tx.addEventListener('abort', () => fault.aborted++);
-    tx.addEventListener('complete', () => fault.committed++);
+    tx.addEventListener('complete', () => {
+      fault.committed++;
+      fault.commits.push({ mark: quantity, status: String(window.__trial_save_status) });
+    });
     if (fault.fail > 0) {
       fault.fail--;
       queueMicrotask(() => tx.abort());
@@ -188,10 +193,16 @@ const scenarios = [
     // The first commit must not acknowledge this newer change.
     await act(page, viewport, mobile);
     await shot('saving');
+    // The game takes input on its next frame: let it run one before the first commit is let go, so the second
+    // press surely came during that commit.
+    await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
     await inject(page, { released: { 'torches:1': true } });
-    await page.waitForFunction(() => qaWrites.committed === 1);
-    assert.ok(!SAVED.includes(await currentStatus(page)));
-    assert.equal(torches(await store.read(page)), 1, 'the first commit holds the first press only');
+    // Judged at the moment the first commit completed: the second one (held 6.2 s, not released yet) may already
+    // be done by the time a slow page answers here.
+    await page.waitForFunction(() => qaWrites.committed >= 1);
+    const first = await page.evaluate(() => qaWrites.commits[0]);
+    assert.equal(first.mark, 'torches:1', 'the first commit holds the first press only');
+    assert.ok(!SAVED.includes(first.status), 'the first commit does not show the newer press as saved (' + first.status + ')');
     await inject(page, { released: { 'torches:1': true, 'torches:0': true } });
     await waitSaved(page);
     const saved = await store.read(page);
