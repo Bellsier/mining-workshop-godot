@@ -91,6 +91,12 @@ jobs:
           set -o pipefail
           timeout 120 godot --headless --path . --fixed-fps 60 --script res://tools/world_objects_test.gd 2>&1 | tee "$RUNNER_TEMP/world-objects.log"
           grep -F 'WORLD OBJECTS PASS' "$RUNNER_TEMP/world-objects.log"
+      - name: 제작 tab keeps the row under the pointer in place (hut recipe picked, list redrawn)
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout 120 godot --headless --path . --fixed-fps 60 --script res://tools/craft_tab_layout_test.gd 2>&1 | tee "$RUNNER_TEMP/craft-tab-layout.log"
+          grep -F 'CRAFT TAB LAYOUT PASS' "$RUNNER_TEMP/craft-tab-layout.log"
       - name: Large saves with huts (import, autosave, load times and nothing lost)
         shell: bash
         run: |

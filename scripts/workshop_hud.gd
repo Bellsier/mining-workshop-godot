@@ -44,6 +44,10 @@ var _names := {}
 var _active_tab := 0
 var _refresh_pending := false
 var _render_key := ""
+## The tab the list was last drawn for: a redraw of the same tab keeps the player's place, a new tab starts at the top.
+var _rendered_tab := -1
+## Where the pointer (mouse or finger) last was, in this layer's coordinates: the row under it is kept in place.
+var _pointer := Vector2(-INF, -INF)
 var _worker_pickers: Array[OptionButton] = []
 var _recovery: ColorRect
 var _recovery_title: Label
@@ -107,6 +111,7 @@ func open_tab(tab: String) -> void:
 	_active_tab = index
 	_tab_buttons[index].set_pressed_no_signal(true)
 	_scroll.scroll_vertical = 0
+	_rendered_tab = -1 # start at the top, not at the place kept from the last drawing
 	_refresh(true)
 
 func toggle_workshop() -> void:
@@ -190,6 +195,7 @@ func _open(only_inventory: bool) -> void:
 	_overlay.show()
 	_tab_buttons[0].set_pressed_no_signal(true)
 	_scroll.scroll_vertical = 0
+	_rendered_tab = -1 # start at the top, not at the place kept from the last drawing
 	_refresh(true)
 
 func _build_bar(surface: Control) -> void:
@@ -338,6 +344,7 @@ func _select_tab(index: int) -> void:
 		return
 	_active_tab = index
 	_scroll.scroll_vertical = 0
+	_rendered_tab = -1 # start at the top, not at the place kept from the last drawing
 	_refresh(true)
 
 func _schedule_refresh() -> void:
@@ -382,6 +389,9 @@ func _refresh(force := false) -> void:
 	if is_instance_valid(focused) and focused.has_meta("row_id"):
 		focused_row = str(focused.get_meta("row_id"))
 	var scroll_position := _scroll.scroll_vertical
+	# Where the player is working, to put it back at the same place on screen once the list is drawn again.
+	var anchor := _view_anchor(focused) if _active_tab == _rendered_tab else {}
+	_rendered_tab = _active_tab
 	for child in _rows.get_children():
 		_rows.remove_child(child)
 		child.queue_free()
@@ -426,10 +436,82 @@ func _refresh(force := false) -> void:
 		TAB_SAVE: _render_save()
 	if _rows.get_child_count() == 0:
 		_rows.add_child(_label("가방에 아이템이 없어요." if _active_tab == TAB_INVENTORY else "지금 가능한 항목이 없어요.", 11))
-	_scroll.set_deferred("scroll_vertical", scroll_position)
+	# Rows above can grow or shrink (a hut's new switch, a bottleneck line), and the containers would only lay the
+	# new rows out later in the frame. Lay them out now and scroll so the anchored control is where it was: the
+	# control under the pointer stays under it, so a click meant for it cannot land on another row.
+	_layout_rows_now()
+	_scroll.scroll_vertical = scroll_position
+	var anchored: Control = _buttons_by_id.get(str(anchor.get("id", "")))
+	if is_instance_valid(anchored):
+		var now := anchored.get_global_rect().position.y - _scroll.get_global_rect().position.y
+		_scroll.scroll_vertical = scroll_position + roundi(now - float(anchor.offset))
+	# Focus goes back to the same control without moving the list: the scroll container follows focus, and it
+	# scrolled the list away under the pointer (to a control measured before the rows were laid out, or to one
+	# the player had scrolled off screen).
 	var previous_button: BaseButton = _buttons_by_id.get(focused_row)
 	if is_instance_valid(previous_button) and not previous_button.disabled:
-		previous_button.grab_focus.call_deferred()
+		_scroll.follow_focus = false
+		previous_button.grab_focus()
+		_scroll.follow_focus = true
+
+## The control to keep in place across a redraw, as {id, offset from the top of the list view}: the row under the
+## pointer, else the focused control, else the first row on screen. {} when there is none.
+func _view_anchor(focused: Control) -> Dictionary:
+	var view := _scroll.get_global_rect()
+	var pointer := _pointer
+	var picks: Array[Control] = []
+	if view.has_point(pointer):
+		for card in _rows.get_children():
+			if card is Control and card.get_global_rect().has_point(pointer):
+				picks.append(_row_control(card, pointer))
+	if is_instance_valid(focused) and focused.has_meta("row_id") and _rows.is_ancestor_of(focused):
+		picks.append(focused)
+	for card in _rows.get_children():
+		if card is Control and card.get_global_rect().end.y > view.position.y:
+			picks.append(_row_control(card, Vector2(INF, INF)))
+			break
+	for c in picks:
+		if is_instance_valid(c) and _buttons_by_id.get(str(c.get_meta("row_id", ""))) == c:
+			return {"id": str(c.get_meta("row_id")), "offset": c.get_global_rect().position.y - view.position.y}
+	return {}
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventMouse or event is InputEventScreenTouch or event is InputEventScreenDrag:
+		_pointer = event.position
+
+## A card's control with an id: the one at the point if there is one, else its first.
+func _row_control(card: Control, point: Vector2) -> Control:
+	var first: Control = null
+	for c in card.find_children("*", "Control", true, false):
+		if not c.has_meta("row_id"):
+			continue
+		if c.get_global_rect().has_point(point):
+			return c
+		if first == null:
+			first = c
+	return first
+
+## Containers lay their children out at the end of the frame; this does it at once. The first pass gives every row
+## its width; wrapped labels then measure their height for that width (their cached minimum sizes, and their
+## containers', are only refreshed later in the frame, so they are dropped here), and the second pass places the
+## rows with those heights.
+func _layout_rows_now() -> void:
+	_sort_now(_scroll)
+	for c in _rows.find_children("*", "Control", true, false):
+		c.update_minimum_size()
+	_rows.update_minimum_size()
+	_sort_now(_scroll)
+	# The scroll range takes the list's height from the scroll container's own minimum size: refresh it too.
+	_scroll.update_minimum_size()
+	_scroll.get_combined_minimum_size()
+	_scroll.notification(Container.NOTIFICATION_SORT_CHILDREN)
+
+func _sort_now(node: Node) -> void:
+	if node is Container:
+		node.notification(Container.NOTIFICATION_SORT_CHILDREN)
+	for child in node.get_children():
+		if child is Control and child.visible:
+			_sort_now(child)
 
 func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: float) -> String:
 	if _active_tab == TAB_WORKERS:
