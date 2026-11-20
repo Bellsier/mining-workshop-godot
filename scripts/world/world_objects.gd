@@ -4,13 +4,15 @@ extends Node2D
 ## stage, the player's house, the garden decorations and the torches, with their wall boxes (they block the
 ## player like the web worldObstacles), the hired workers (world_workers.gd) and the dusk light (world_light.gd).
 ## Drawing and collision only; the rules are in scripts/workshop.gd and scripts/village_layout.gd.
-## The buildings (the workshop cabin, the craft huts, the village facilities, the house) are drawn on two layers
-## round the player, each building on its own merit (web tdDrawList's sort by the ground point): a building whose
-## picture overlaps the player's and whose front wall line is south of the player's feet goes on the layer over
-## the player; every other building on the layer under. North to south within a layer.
+## What stands up from the ground - the buildings (the workshop cabin, the craft huts, the village facilities, the
+## house), the workers and the trees - is drawn in ground order round the player (web tdDrawList's sort by the
+## ground point): what stands north of the player's feet on the layer under the player, the rest on the layer
+## over, each layer north to south. A building's ground point is the line of its front wall. Names of buildings
+## go on top of it all, faint where they cross the player.
 
 const WorldData := preload("res://scripts/world/world_data.gd")
 const Sprites := preload("res://scripts/world/world_sprites.gd")
+const Sway := preload("res://scripts/world/world_sway.gd")
 const Layout := preload("res://scripts/village_layout.gd")
 const FONT := preload("res://fonts/Galmuri9.ttf")
 
@@ -23,12 +25,16 @@ var _bodies: Node2D
 var _bodies_key := ""
 var _draw_key := ""
 var light: Node2D
-## The buildings under the player (z 1) and over the player (z 3); the player is z 2. The workers (z 2, drawn
-## before the player) stay over the buildings, except one the player is standing behind just then.
+## What stands north of the player (z 1) and south of them (z 3); the player is z 2; the names z 4.
 var buildings: Node2D
 var buildings_front: Node2D
+var names: Node2D
+var workers: Node2D
 ## Indices into _occluders of the buildings over the player now.
 var _front: Array = []
+## This frame's standing things in ground order: {foot, draw, kind, id}; the first `_split` are north of the player.
+var _standing: Array = []
+var _split := 0
 ## Where the building drawing goes (the buildings' layer while it draws).
 var _c: CanvasItem = self
 ## {rect, foot, draw}: each building's drawn area, its front wall line (world px) and how to draw it, north first.
@@ -52,11 +58,16 @@ func setup(game_economy: Node, world_state: RefCounted, walker: Node2D) -> void:
 	buildings_front.z_index = 3
 	buildings_front.draw.connect(_draw_layer.bind(true))
 	add_child(buildings_front)
+	names = Node2D.new()
+	names.name = "BuildingNames"
+	names.z_index = 4
+	names.draw.connect(_draw_names)
+	add_child(names)
 	if is_instance_valid(player):
 		player.z_index = 2
-	var workers := preload("res://scripts/world/world_workers.gd").new()
+	workers = preload("res://scripts/world/world_workers.gd").new()
 	workers.name = "Workers"
-	workers.z_index = 2 # over the buildings (under the player, drawn after them), as before buildings had layers
+	workers.drawn_elsewhere = true # in ground order with the buildings and the trees
 	add_child(workers)
 	workers.setup(economy, world)
 	light = preload("res://scripts/world/world_light.gd").new()
@@ -112,12 +123,12 @@ func _occluder_list(village: Dictionary) -> Array:
 	var boxes := WorldData.obstacle_boxes()
 	var base := to_px(world.base.x, world.base.y)
 	out.append({"rect": Rect2(base + Vector2(-32, -54), Vector2(64, 58)), "foot": base.y + float(boxes.base.maxY) * UNIT,
-		"draw": _draw_cabin.bind(base)})
+		"draw": _draw_cabin.bind(base), "name": [base + Vector2(0, -60), "공방"]})
 	for w_index in world.workshops.size():
 		var w: Dictionary = world.workshops[w_index]
 		var at := to_px(w.x, w.y)
 		out.append({"rect": Rect2(at + Vector2(-19, -31), Vector2(38, 25)), "foot": at.y + float(boxes.workshop.maxY) * UNIT,
-			"draw": _draw_hut.bind(w, w_index)})
+			"draw": _draw_hut.bind(w, w_index), "name": [at + Vector2(0, -34), "제작소 %d" % (w_index + 1)]})
 	var sites: Dictionary = village.get("sites", {})
 	for key: String in Layout.ORDER:
 		if sites.get(key) is Dictionary:
@@ -126,11 +137,13 @@ func _occluder_list(village: Dictionary) -> Array:
 			var w: float = (b.maxX - b.minX) * UNIT
 			var h: float = (b.maxY - b.minY) * UNIT + 4.0
 			out.append({"rect": Rect2(at + Vector2(-w / 2.0 - 3.0, -16.0 - h), Vector2(w + 6.0, 10.0 + h)), "foot": at.y + float(b.maxY) * UNIT,
-				"draw": _draw_facility.bind(key, sites[key], int(village.get("stage", {}).get(key, 0)))})
+				"draw": _draw_facility.bind(key, sites[key], int(village.get("stage", {}).get(key, 0))),
+				"name": [at + Vector2(0, -40), str(Layout.V().FACILITIES[key].name)]})
 	if village.get("district") is Dictionary:
 		var door: Dictionary = Layout.district_parts(village.district).house
 		var at := to_px(door.x, door.y)
-		out.append({"rect": Rect2(at + Vector2(-36, -64), Vector2(72, 58)), "foot": at.y - 6.0, "draw": _draw_house.bind(door)})
+		out.append({"rect": Rect2(at + Vector2(-36, -64), Vector2(72, 58)), "foot": at.y - 6.0, "draw": _draw_house.bind(door),
+			"name": [at + Vector2(0, -68), "내 집"]})
 	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.foot) < float(b.foot))
 	return out
 
@@ -154,12 +167,41 @@ func player_behind() -> bool:
 	return not covering().is_empty()
 
 
+## The buildings, the workers on the map and the trees in view, in ground order, split at the player's feet.
+func _sort_standing() -> void:
+	var items: Array = []
+	for i in _occluders.size():
+		var o: Dictionary = _occluders[i]
+		items.append({"foot": float(o.foot), "draw": o.draw, "kind": "building", "id": i})
+	if workers != null:
+		for w: Dictionary in workers.shown():
+			items.append({"foot": float(w.s.y) * UNIT, "draw": workers.draw_worker.bind(w.p, w.s), "kind": "worker", "id": str(w.p.id)})
+	var map := get_parent()
+	if map != null and map.get("scenery_now") != null:
+		var view := Sway.view_rect(self)
+		var still: bool = light == null or int(light.quality) >= 2
+		var now := float(Time.get_ticks_msec())
+		for p: Dictionary in map.scenery_now:
+			if str(p.kind) in ["bigTree", "sparseTree"]:
+				var at := to_px(p.x, p.y)
+				if view.has_point(at):
+					items.append({"foot": at.y, "draw": Sway.draw_one.bind(at, p, still, now), "kind": "tree", "id": "%s,%s" % [p.x, p.y]})
+	items.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.foot < b.foot)
+	var feet := player.position.y if is_instance_valid(player) else INF
+	_split = items.size()
+	for i in items.size():
+		if items[i].foot > feet:
+			_split = i
+			break
+	_standing = items
+
+
 func _process(_delta: float) -> void:
-	var now := covering()
-	if now != _front:
-		_front = now
-		buildings.queue_redraw()
-		buildings_front.queue_redraw()
+	_front = covering()
+	_sort_standing()
+	buildings.queue_redraw()
+	buildings_front.queue_redraw()
+	names.queue_redraw()
 
 
 func _add_box(o: Dictionary) -> void:
@@ -190,22 +232,47 @@ func _draw() -> void:
 		_draw_torch(to_px(t.x, t.y))
 
 
-## One of the buildings' layers: the buildings over the player (front) or the rest, north to south.
+## One of the standing layers: what stands south of the player's feet (front) or north of them, north to south.
 func _draw_layer(front: bool) -> void:
 	if world == null:
 		return
 	_c = buildings_front if front else buildings
-	for i in _occluders.size():
-		if (i in _front) == front:
-			_occluders[i].draw.call()
+	for i in range(_split, _standing.size()) if front else range(0, _split):
+		var item: Dictionary = _standing[i]
+		if item.kind == "building":
+			item.draw.call() # draws on _c
+		else:
+			item.draw.call(_c) # a worker or a tree: the canvas comes first, then the bound values
 	_c = self
+
+
+## Building names on top, faint where they cross the player's picture (16 x 24 above the feet).
+func _draw_names() -> void:
+	var body := Rect2(player.position + Vector2(-8, -24), Vector2(16, 24)) if is_instance_valid(player) else Rect2()
+	for o: Dictionary in _occluders:
+		var at: Vector2 = o.name[0]
+		var text: String = o.name[1]
+		var width := FONT.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x
+		var area := Rect2(at - Vector2(width / 2.0, 9), Vector2(width, 11))
+		var alpha := 0.25 if area.intersects(body) else 1.0
+		names.draw_string_outline(FONT, at - Vector2(width / 2.0, 0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, 3, Color(Color("241b19"), alpha))
+		names.draw_string(FONT, at - Vector2(width / 2.0, 0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(Color("f7e1b8"), alpha))
+
+
+## Whether the name is drawn faint now (for tests): the building's index.
+func name_faint(index: int) -> bool:
+	if not is_instance_valid(player) or index >= _occluders.size():
+		return false
+	var o: Dictionary = _occluders[index]
+	var width := FONT.get_string_size(o.name[1], HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x
+	return Rect2(o.name[0] - Vector2(width / 2.0, 9), Vector2(width, 11)).intersects(Rect2(player.position + Vector2(-8, -24), Vector2(16, 24)))
 
 
 ## The workshop cabin (web tdBaseSprite) and its name.
 func _draw_cabin(base: Vector2) -> void:
 	var cabin := Sprites.base()
 	_c.draw_texture(cabin, Sprites.origin(cabin, base, Sprites.ANCHOR.base))
-	_label(base + Vector2(0, -60), "공방")
+
 
 
 func _draw_ground(village: Dictionary) -> void:
@@ -233,12 +300,6 @@ func _draw_ground(village: Dictionary) -> void:
 	draw_rect(Rect2(to_px(g.x - g.hw, g.y - g.hh), Vector2(g.hw * 2.0, g.hh * 2.0) * UNIT), Color8(70, 116, 60), false, 2.0)
 
 
-func _label(at: Vector2, text: String) -> void:
-	var width := FONT.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x
-	_c.draw_string_outline(FONT, at - Vector2(width / 2.0, 0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, 3, Color("241b19"))
-	_c.draw_string(FONT, at - Vector2(width / 2.0, 0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color("f7e1b8"))
-
-
 func _draw_hut(w: Dictionary, index: int) -> void:
 	var at := to_px(w.x, w.y)
 	_c.draw_rect(Rect2(at + Vector2(-16, -20), Vector2(32, 14)), Color8(126, 98, 70))
@@ -246,14 +307,13 @@ func _draw_hut(w: Dictionary, index: int) -> void:
 	_c.draw_rect(Rect2(at + Vector2(-4, -13), Vector2(8, 7)), Color8(62, 44, 30))
 	# the forge window glows
 	_c.draw_rect(Rect2(at + Vector2(-13, -16), Vector2(5, 4)), Color8(255, 160, 80))
-	_label(at + Vector2(0, -34), "제작소 %d" % (index + 1))
+
 
 
 func _draw_facility(key: String, site: Dictionary, stage: int) -> void:
 	var at := to_px(site.x, site.y)
 	var b: Dictionary = Layout.V().FACILITIES[key].box
 	var w: float = (b.maxX - b.minX) * UNIT
-	var name: String = Layout.V().FACILITIES[key].name
 	if stage <= 0:
 		# 폐허: broken walls and rubble
 		_c.draw_rect(Rect2(at + Vector2(-w / 2.0, -14), Vector2(w * 0.35, 10)), Color8(120, 112, 104))
@@ -273,7 +333,7 @@ func _draw_facility(key: String, site: Dictionary, stage: int) -> void:
 		_c.draw_rect(Rect2(at + Vector2(-w / 2.0, -6 - h), Vector2(w, h)), wall)
 		_c.draw_colored_polygon(PackedVector2Array([at + Vector2(-w / 2.0 - 3, -5 - h), at + Vector2(0, -16 - h), at + Vector2(w / 2.0 + 3, -5 - h)]), roof)
 		_c.draw_rect(Rect2(at + Vector2(-4, -13), Vector2(8, 7)), Color8(62, 44, 30))
-	_label(at + Vector2(0, -40), name)
+
 
 
 func _draw_house(door: Dictionary) -> void:
@@ -283,7 +343,7 @@ func _draw_house(door: Dictionary) -> void:
 	_c.draw_rect(Rect2(at + Vector2(-5, -18), Vector2(10, 12)), Color8(92, 62, 40))
 	_c.draw_rect(Rect2(at + Vector2(-24, -34), Vector2(10, 8)), Color8(255, 220, 150))
 	_c.draw_rect(Rect2(at + Vector2(14, -34), Vector2(10, 8)), Color8(255, 220, 150))
-	_label(at + Vector2(0, -68), "내 집")
+
 
 
 func _draw_decor(kind: String, cell: Dictionary, carried: bool) -> void:

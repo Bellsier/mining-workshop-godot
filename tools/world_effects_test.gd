@@ -8,7 +8,9 @@ extends SceneTree
 ##    with the real interaction raises "광맥 확보!" and "+1 철광석", a second press adds up (+2), and the effect
 ##    quality's lowest step stops the sway, clouds and fireflies.
 ## 4. The cabin hides the player standing behind it (and not one at its door or beside it); in a dense village
-##    (every craft hut built), between two overlapping buildings only the one the player is behind is over them.
+##    (every craft hut built), between two overlapping buildings only the one the player is behind is over them;
+##    workers and trees are in the same ground order (a worker in front of the cabin is over it while the player
+##    is behind it); a building's name fades where it crosses the player.
 ## 5. The "다음 할 일" card: shown with the menu closed, hidden while it is open; the first step says the first E
 ##    secures a vein.
 ## Prints "WORLD EFFECTS PASS" and exits 0, or the failures and exits 1.
@@ -154,8 +156,64 @@ func _scene() -> void:
 		_check(over == c[1] and objects.player_behind() == c[1], "player %s: the cabin is %s the player" % [c[2], "over" if c[1] else "under"])
 	_check(objects.buildings.z_index < player.z_index and player.z_index < objects.buildings_front.z_index,
 		"the player is between the buildings under them and the ones over them (%d < %d < %d)" % [objects.buildings.z_index, player.z_index, objects.buildings_front.z_index])
-	_check(objects.get_node("Workers").z_index == player.z_index and objects.get_node("Workers").z_index > objects.buildings.z_index,
-		"the workers stay over the buildings and under the player, as before")
+	# workers and trees in ground order with the buildings and the player: hire one worker and put them, and a tree,
+	# in front of and behind the cabin
+	eco.state.gold = 1000.0
+	eco.hire("gold")
+	eco.assign_worker(str(eco.state.characters[0].id), "iron")
+	await _frames(3)
+	var crew: Node = objects.workers
+	var sim: Dictionary = crew._sim.values()[0]
+	sim.delay = 0.0
+	var tree := {"kind": "bigTree", "x": float(map.state.base.x) + 1.6, "y": float(map.state.base.y) + 1.0, "size": 1.0}
+	# the order is checked right after sorting, with the worker and the player where they are put (the worker's
+	# own walk and the map's redraws would move them on between frames)
+	var order := func(kind: String) -> int:
+		for i in objects._standing.size():
+			if objects._standing[i].kind == kind:
+				return i
+		return -1
+	var cabin_index := func() -> int:
+		for i in objects._standing.size():
+			var it: Dictionary = objects._standing[i]
+			if it.kind == "building" and objects._occluders[it.id].name[1] == "공방":
+				return i
+		return -1
+	for c: Array in [[Vector2(0, -34), Vector2(10, 4), "the player behind the cabin, a worker in front of it"],
+			[Vector2(0, 8), Vector2(-10, -34), "the player in front of the cabin, a worker behind it"]]:
+		player.position = cabin_at + c[0]
+		sim.mode = "wait"
+		sim.route = []
+		sim.x = (cabin_at.x + c[1].x) / 64.0
+		sim.y = (cabin_at.y + c[1].y) / 64.0
+		sim.hidden = false
+		objects._sort_standing()
+		var w: int = order.call("worker")
+		var cab: int = cabin_index.call()
+		var worker_front: bool = c[1].y > -6.4
+		_check(w >= 0 and cab >= 0 and (w > cab) == worker_front, "%s: the worker is drawn %s the cabin (worker %d, cabin %d)" % [c[2], "over" if worker_front else "under", w, cab])
+		_check(((w >= objects._split) == (c[1].y > c[0].y)), "%s: the worker is on the %s side of the player" % [c[2], "front" if c[1].y > c[0].y else "back"])
+	var tree_at: Vector2 = map.to_px(Vector2(float(map.state.base.x) + 1.6, float(map.state.base.y) + 1.0))
+	for c: Array in [[Vector2(0, -10), true, "behind the tree"], [Vector2(0, 6), false, "in front of the tree"]]:
+		player.position = tree_at + c[0]
+		map.scenery_now = [tree]
+		objects._sort_standing()
+		var t: int = order.call("tree")
+		_check(t >= 0 and (t >= objects._split) == c[1], "the player %s: the tree is drawn %s the player" % [c[2], "over" if c[1] else "under"])
+	# the cabin's name fades where it crosses the player, and only there
+	player.position = cabin_at + Vector2(0, -34)
+	await _frames(2)
+	var cabin_occ := -1
+	for i in objects._occluders.size():
+		if objects._occluders[i].name[1] == "공방":
+			cabin_occ = i
+	player.position = cabin_at + Vector2(0, -58)
+	await _frames(1)
+	_check(objects.name_faint(cabin_occ), "the cabin's name is faint over the player's head behind the roof")
+	player.position = cabin_at + Vector2(0, 8)
+	await _frames(1)
+	_check(not objects.name_faint(cabin_occ), "the cabin's name is drawn fully when the player is elsewhere")
+	_check(objects.names.z_index > objects.buildings_front.z_index, "names are drawn over the buildings")
 	# the lowest effect quality stops the effects
 	light.quality = 2
 	light.force_darkness = 0.34
