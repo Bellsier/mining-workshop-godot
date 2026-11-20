@@ -1,4 +1,4 @@
-[gd_scene load_steps=8 format=4]
+[gd_scene load_steps=9 format=4]
 
 [ext_resource type="Script" path="res://scripts/level.gd" id="1_rwsgu"]
 [ext_resource type="TileSet" path="res://art/tileset.tres" id="2_w4w55"]
@@ -8,6 +8,9 @@
 [ext_resource type="Script" path="res://scripts/touch_stick.gd" id="6_eu200"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_mvh2h"]
+size = Vector2(12, 48)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_west"]
 size = Vector2(12, 48)
 
 [node name="Tunnel" type="Node2D"]
@@ -30,7 +33,7 @@ offset_top = 110.0
 offset_right = 32.0
 offset_bottom = 110.0
 theme_override_font_sizes/font_size = 10
-text = "공사 중 · 이 너머는 다음 시험판에서"
+text = "← 서쪽 끝을 지나면 산 너머"
 
 [node name="Exit" type="Area2D" parent="."]
 position = Vector2(632, 152)
@@ -41,10 +44,22 @@ target_spawn = "FromTunnel"
 [node name="Shape" type="CollisionShape2D" parent="Exit"]
 shape = SubResource("RectangleShape2D_mvh2h")
 
+[node name="West" type="Area2D" parent="."]
+position = Vector2(26, 152)
+script = ExtResource("3_pnhxe")
+target_scene = "res://scenes/world/world_map.tscn"
+target_spawn = "FromTunnel"
+
+[node name="Shape" type="CollisionShape2D" parent="West"]
+shape = SubResource("RectangleShape2D_west")
+
 [node name="Spawns" type="Node2D" parent="."]
 
 [node name="FromOutside" type="Marker2D" parent="Spawns"]
 position = Vector2(592, 156)
+
+[node name="FromBeyond" type="Marker2D" parent="Spawns"]
+position = Vector2(64, 156)
 
 [node name="Player" type="CharacterBody2D" parent="." instance=ExtResource("4_sms2w")]
 motion_mode = 1

@@ -8,6 +8,7 @@ func _ready() -> void:
 	var marker := get_node_or_null("Spawns/" + game.spawn_name)
 	if marker:
 		$Player.global_position = marker.global_position
+	game.bind_level(self, $Player)
 	var bounds := Rect2()
 	var first := true
 	for layer in find_children("*", "TileMapLayer", false):

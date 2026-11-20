@@ -4,8 +4,8 @@ config_version=5
 [application]
 
 config/name="Mining Workshop - Godot trial"
-config/description="Godot 4 migration trial: walk from the workshop to the western mountains and through the tunnel."
-run/main_scene="res://scenes/overworld.tscn"
+config/description="Mining Workshop Godot migration: exploration, mining, production, trade and saves."
+run/main_scene="res://scenes/world/world_map.tscn"
 config/features=PackedStringArray("4.4", "GL Compatibility")
 
 [autoload]
@@ -42,6 +42,5 @@ textures/canvas_textures/default_texture_filter=0
 
 [gui]
 
-theme/custom_font="res://fonts/Galmuri9.ttf"
 theme/default_font_antialiasing=0
 theme/default_font_hinting=0
