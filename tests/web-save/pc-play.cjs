@@ -342,16 +342,6 @@ async function partB(page, origin, state) {
     'B: the hut crafts by itself while the menu stays open', { recipe, before: made0, after: inv(s, recipe) });
   await shot(page, 'b-hut');
 
-  // Automatic selling of what the hut makes: bought and turned on in the sell tab.
-  await tab(page, '판매');
-  await click(page, 'buy_auto_sell:' + recipe);
-  s = await savedState(page, x => x.automation?.sell_owned?.[recipe]);
-  check(!!s.automation?.sell_owned?.[recipe], 'B: 자동 판매 열기 buys automatic selling of ' + recipe, { gold: s.gold });
-  await delay(400);
-  await click(page, 'set_auto_sell:' + recipe);
-  s = await savedState(page, x => x.automation?.sell?.[recipe]);
-  check(!!s.automation?.sell?.[recipe], 'B: 자동 판매 turns it on');
-
   await page.keyboard.press('Escape');
   await delay(300);
   // The village: walk to the appraiser's site and clear it, then rebuild it, with E.
@@ -374,6 +364,21 @@ async function partB(page, origin, state) {
   await walkTo(page, base.x, base.y, 0.7);
   await pressE(page);
   await delay(400);
+  // Automatic selling of what the hut makes: bought in the sell tab (on from the purchase, as on the web), then
+  // switched off and on again with its toggle.
+  await tab(page, '판매');
+  await click(page, 'buy_auto_sell:' + recipe);
+  s = await savedState(page, x => x.automation?.sell_owned?.[recipe]);
+  check(!!s.automation?.sell_owned?.[recipe] && !!s.automation?.sell?.[recipe],
+    'B: 자동 판매 열기 buys automatic selling of ' + recipe + ' and it is on', { gold: s.gold });
+  await delay(400);
+  await click(page, 'set_auto_sell:' + recipe);
+  s = await savedState(page, x => x.automation?.sell?.[recipe] === false);
+  check(s.automation?.sell?.[recipe] === false, 'B: 자동 판매 toggled off');
+  await delay(400);
+  await click(page, 'set_auto_sell:' + recipe);
+  s = await savedState(page, x => x.automation?.sell?.[recipe] === true);
+  check(s.automation?.sell?.[recipe] === true, 'B: 자동 판매 toggled on again');
   await tab(page, '연구');
   const gold0 = s.gold;
   await click(page, 'tunnel');
