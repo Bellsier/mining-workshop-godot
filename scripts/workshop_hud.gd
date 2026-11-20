@@ -22,6 +22,11 @@ var _garden: Button
 var _garden_callback := Callable()
 var _action_label := ""
 var _action_callback := Callable()
+## A label too long for the action button is split at its first " · ": the action stays on the button, the rest
+## (a cost, counts) goes on this line above it, in full.
+var _action_detail: Label
+var _action_head := ""
+var _action_rest := ""
 var _context_hint: Label
 var _context_hint_text := ""
 var _overlay: ColorRect
@@ -204,6 +209,7 @@ func close_workshop() -> void:
 	_torch.visible = _torch_callback.is_valid()
 	_garden.visible = not _garden.text.is_empty()
 	_context_hint.visible = not _context_hint_text.is_empty()
+	_place_action_detail()
 
 func is_workshop_open() -> bool:
 	return is_instance_valid(_overlay) and _overlay.visible
@@ -211,9 +217,31 @@ func is_workshop_open() -> bool:
 func set_action(label: String, callback: Callable = Callable()) -> void:
 	_action_label = label
 	_action_callback = callback
+	_action_head = label
+	_action_rest = ""
 	if is_instance_valid(_action):
-		_action.text = label
+		var font := _action.get_theme_font("font")
+		var room := ACTION_WIDTH - 12.0
+		var cut := label.find(" · ")
+		if cut > 0 and font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, _action.get_theme_font_size("font_size")).x > room:
+			_action_head = label.substr(0, cut)
+			_action_rest = label.substr(cut + 3)
+		_action.text = _action_head
 		_action.visible = not label.is_empty() and not is_workshop_open()
+		_action_detail.text = _action_rest
+		_place_action_detail()
+
+## What the action button shows for `label` (the action alone when its cost went to the detail line).
+func action_text_for(label: String) -> String:
+	return _action_head if label == _action_label else label
+
+## The detail line sits over the key hint, or over the garden button while that is shown; it grows upward.
+func _place_action_detail() -> void:
+	if not is_instance_valid(_action_detail):
+		return
+	_action_detail.offset_bottom = -78.0 if _garden.visible else -58.0
+	_action_detail.offset_top = _action_detail.offset_bottom - 1.0
+	_action_detail.visible = not _action_rest.is_empty() and _action.visible
 
 ## Shows the garden button with `label` ("" hides it); pressing it calls `callback`.
 func set_garden(label: String, callback: Callable = Callable()) -> void:
@@ -221,6 +249,7 @@ func set_garden(label: String, callback: Callable = Callable()) -> void:
 	if is_instance_valid(_garden):
 		_garden.text = label
 		_garden.visible = not label.is_empty() and not is_workshop_open()
+		_place_action_detail()
 
 ## Shows the torch button on touch screens while `callback` is valid (the world map), hides it otherwise.
 func set_torch(callback: Callable) -> void:
@@ -229,6 +258,9 @@ func set_torch(callback: Callable) -> void:
 		_torch.visible = _torch_callback.is_valid() and not is_workshop_open()
 
 func set_context_hint(message: String) -> void:
+	# the key hint names the action as the button does (its cost is on the line above)
+	if not _action_rest.is_empty() and message.ends_with(_action_label):
+		message = message.substr(0, message.length() - _action_label.length()) + _action_head
 	_context_hint_text = message
 	if is_instance_valid(_context_hint):
 		_context_hint.text = message
@@ -263,6 +295,7 @@ func _open(only_inventory: bool) -> void:
 	_hint_card.hide()
 	_save_indicator.hide()
 	_action.hide()
+	_action_detail.hide()
 	_torch.hide()
 	_garden.hide()
 	_context_hint.hide()
@@ -272,6 +305,9 @@ func _open(only_inventory: bool) -> void:
 	_scroll.scroll_vertical = 0
 	_rendered_tab = -1 # start at the top, not at the place kept from the last drawing
 	_refresh(true)
+
+## The action button's width (it keeps it whatever the label).
+const ACTION_WIDTH := 104.0
 
 ## The "다음 할 일" card (web #nextHint in the world view): what to do next, at the top left next to the map, while
 ## the menu is closed. It fades while the player walks under it (web td-hint-under / td-hint-near).
@@ -368,10 +404,14 @@ func _build_bar(surface: Control) -> void:
 	_torch.offset_right = -116
 	_torch.offset_bottom = -8
 	_action.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
-	_action.offset_left = -112
+	_action.offset_left = -8 - ACTION_WIDTH
 	_action.offset_top = -38
 	_action.offset_right = -8
 	_action.offset_bottom = -8
+	# a fixed size: a long label never pushes it off the screen (set_action keeps the text short)
+	_action.clip_text = true
+	_action.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_action.custom_minimum_size = Vector2(ACTION_WIDTH, 0)
 	_context_hint = _label("", 10)
 	_context_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_context_hint.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -383,6 +423,20 @@ func _build_bar(surface: Control) -> void:
 	_context_hint.offset_top = -57
 	_context_hint.offset_right = -8
 	_context_hint.offset_bottom = -40
+	_action_detail = _label("", 10)
+	_action_detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_action_detail.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+	_action_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_action_detail.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_action_detail.add_theme_color_override("font_color", Color("f1c577"))
+	_action_detail.add_theme_constant_override("outline_size", 4)
+	_action_detail.add_theme_color_override("font_outline_color", Color("211c18"))
+	surface.add_child(_action_detail)
+	_action_detail.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	_action_detail.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_action_detail.offset_left = -228
+	_action_detail.offset_right = -8
+	_action_detail.hide()
 
 func _build_overlay(surface: Control) -> void:
 	_overlay = ColorRect.new()

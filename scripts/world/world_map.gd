@@ -222,7 +222,12 @@ func _physics_process(delta: float) -> void:
 	var text: String = place.label
 	text += "  ·  광맥 %d/%d" % [state.discovered_count(), state.mines.size()]
 	if not _target.is_empty():
-		text += "\nE  ·  " + str(_target.label)
+		# as on the action button: a long label's cost is shown once, on the line above the button
+		var hud: Variant = get_node("/root/Game").get("_hud")
+		var shown := str(_target.label)
+		if hud != null and hud.has_method("action_text_for"):
+			shown = hud.action_text_for(shown)
+		text += "\nE  ·  " + shown
 	if text != _place:
 		_place = text
 		_region_label.text = text
