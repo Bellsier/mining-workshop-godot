@@ -97,6 +97,18 @@ jobs:
           set -o pipefail
           timeout 120 godot --headless --path . --fixed-fps 60 --script res://tools/craft_tab_layout_test.gd 2>&1 | tee "$RUNNER_TEMP/craft-tab-layout.log"
           grep -F 'CRAFT TAB LAYOUT PASS' "$RUNNER_TEMP/craft-tab-layout.log"
+      - name: Menu input (free delivery, held presses, swipes, kept popups and drafts)
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout 300 godot --headless --path . --fixed-fps 60 --script res://tools/hud_input_test.gd 2>&1 | tee "$RUNNER_TEMP/hud-input.log"
+          grep -F 'HUD INPUT PASS' "$RUNNER_TEMP/hud-input.log"
+      - name: Menu redraws while the game runs (rows added per 100 ticks, frame times)
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout 300 godot --headless --path . --fixed-fps 60 --script res://tools/hud_redraw_bench.gd -- --check 2>&1 | tee "$RUNNER_TEMP/hud-redraw.log"
+          grep -F 'HUD REDRAW BENCH DONE' "$RUNNER_TEMP/hud-redraw.log"
       - name: Large saves with huts (import, autosave, load times and nothing lost)
         shell: bash
         run: |

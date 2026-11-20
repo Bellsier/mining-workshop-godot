@@ -64,6 +64,13 @@ jobs:
           else
             node run.cjs
           fi
+      - name: Workshop menu in Chromium (desktop 960x540 and phone 568x320, mouse, keyboard and touch)
+        if: ${{ !cancelled() && matrix.browser == 'chromium' }}
+        working-directory: tests/web-save
+        env:
+          SAVE_QA_WEB: ${{ runner.temp }}/save-qa-web
+          SAVE_QA_OUTPUT: ${{ runner.temp }}/save-qa-results
+        run: node hud-browser.cjs
       - name: Keep browser save evidence
         if: always()
         uses: actions/upload-artifact@v4
