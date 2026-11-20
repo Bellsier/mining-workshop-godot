@@ -230,15 +230,16 @@ async function dusk({ page, shot, details, origin }) {
   await delay(1500);
   await shot('dusk-workshop');
   // round the cabin's west wall to stand behind it: the roof hides the player there
-  await walkTo(page, 'x', workshop.x - 80, 10);
-  await walkTo(page, 'y', -40, 6);
-  await walkTo(page, 'x', workshop.x, 8);
+  // (setting up the shot: more key holds allowed, a busy machine takes bigger, later steps)
+  await walkTo(page, 'x', workshop.x - 80, 10, 12);
+  await walkTo(page, 'y', -40, 6, 12);
+  await walkTo(page, 'x', workshop.x, 8, 12);
   const behind = await position(page);
   assert.ok(behind.y < -28 && Math.abs(behind.x - workshop.x) < 12, 'Behind the cabin: ' + JSON.stringify(behind));
   await shot('dusk-behind-cabin');
   details.behindCabin = behind;
-  await walkTo(page, 'x', workshop.x - 80, 10);
-  await walkTo(page, 'y', 140, 10);
+  await walkTo(page, 'x', workshop.x - 80, 10, 12);
+  await walkTo(page, 'y', 140, 10, 12);
   await shot('dusk-meadow');
   details.clock = 'dusk';
 }

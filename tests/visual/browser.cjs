@@ -91,8 +91,9 @@ async function holdKey(page, key, operation) {
   finally { await page.keyboard.up(key); }
 }
 
-async function walkTo(page, axis, target, tolerance = 6) {
-  for (let attempt = 0; attempt < 4; attempt++) {
+// `attempts`: how many key holds to get there (a slow, busy machine moves the player in bigger, later steps).
+async function walkTo(page, axis, target, tolerance = 6, attempts = 4) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const current = (await position(page))[axis];
     if (Math.abs(current - target) <= tolerance) return;
     const forward = current < target;
