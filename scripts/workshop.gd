@@ -4,6 +4,8 @@ signal world_replaced
 signal changed
 signal feedback(message: String)
 signal save_status_changed(status: String)
+## An import was applied: the imported save is the game now and is stored (on the web: its commit completed).
+signal imported
 
 const World = preload("res://scripts/world/world_state.gd")
 const Save = preload("res://scripts/workshop_save.gd")
@@ -1687,6 +1689,7 @@ func _apply_import(candidate: Dictionary, message := "저장 불러오기 완료
 	_dirty_shown = false
 	if persistence_enabled:
 		_set_save_status(_saved_status())
+	imported.emit()
 	world_replaced.emit()
 	changed.emit()
 	feedback.emit(message)

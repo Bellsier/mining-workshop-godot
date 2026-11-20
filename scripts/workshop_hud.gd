@@ -39,6 +39,10 @@ var _toast_text: Label
 var _toast_timer: Timer
 var _save_input: TextEdit
 var _save_draft := ""
+## The draft was in the save tab when an import succeeded: it is not the game's save now. It is kept (it may be the
+## only copy of the save the import replaced that the player can reach), marked, and importing it asks twice.
+var _save_draft_stale := false
+var _stale_import_armed := false
 var _buttons_by_id := {}
 var _names := {}
 var _active_tab := 0
@@ -84,10 +88,14 @@ func setup(workshop: Node) -> void:
 		_workshop.disconnect("changed", _schedule_refresh)
 		_workshop.disconnect("feedback", _show_feedback)
 		_workshop.disconnect("save_status_changed", _show_save_status)
+		if _workshop.has_signal("imported"):
+			_workshop.disconnect("imported", _on_imported)
 	_workshop = workshop
 	_workshop.connect("changed", _schedule_refresh)
 	_workshop.connect("feedback", _show_feedback)
 	_workshop.connect("save_status_changed", _show_save_status)
+	if _workshop.has_signal("imported"):
+		_workshop.connect("imported", _on_imported)
 	_show_save_status(_workshop.save_status)
 	if is_node_ready():
 		_refresh()
@@ -1240,9 +1248,9 @@ func _on_ship_qty_done(id: String) -> void:
 
 ## Pressing 자유 납품 ships the product picked and the quantity typed right now, typed and not confirmed with Enter
 ## included. A quantity that is not a whole number from 1 to 999999 is not shipped: the field shows the number it
-## would become and the player confirms it with another press. A second press in the same moment ships nothing.
-const SHIP_REPEAT_MS := 400
-var _ship_sent_at := {}
+## would become and the player confirms it with another press. One press ships once: a press that arrives while
+## the previous one is still on its way (the same frame) is dropped; presses after that each ship, as fast as the
+## player presses (stock and gold are checked by each shipment).
 var _ship_pending := {}
 
 func _send_free_delivery(id: String) -> void:
@@ -1268,11 +1276,7 @@ func _send_free_delivery(id: String) -> void:
 		_show_feedback("납품 수량은 1~999999 사이의 숫자로 입력하세요. 확인 후 다시 눌러 주세요.")
 		_schedule_refresh()
 		return
-	var at := Time.get_ticks_msec()
-	if at - int(_ship_sent_at.get(id, -SHIP_REPEAT_MS)) < SHIP_REPEAT_MS:
-		return
-	if _workshop.call("ship_free", id, str(now.product), qty):
-		_ship_sent_at[id] = at
+	_workshop.call("ship_free", id, str(now.product), qty)
 	_schedule_refresh()
 
 func _render_upgrades(upgrades: Array, inventory: Dictionary, gold: float) -> void:
@@ -1353,6 +1357,12 @@ func _render_save() -> void:
 	var explanation := _label("웹판에서 내보낸 저장 JSON을 붙여넣으세요. 가져오면 현재 진행이 바뀝니다.", 11)
 	explanation.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_rows.add_child(explanation)
+	if _save_draft_stale and not _save_draft.strip_edges().is_empty():
+		var stale := _label("아래 입력은 방금 가져오기 전에 있던 내용이에요. 지금 게임의 저장이 아니에요. 필요하면 복사해 보관하고, 지금 저장은 '내보내기'로 보세요.", 10)
+		stale.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		stale.add_theme_color_override("font_color", Color("f1c577"))
+		stale.set_meta("row_id", "save_draft_stale")
+		_rows.add_child(stale)
 	_save_input = TextEdit.new()
 	_save_input.placeholder_text = "저장 JSON"
 	_save_input.text = _save_draft
@@ -1360,22 +1370,28 @@ func _render_save() -> void:
 	_save_input.custom_minimum_size.y = 87
 	_save_input.add_theme_font_size_override("font_size", 10)
 	_save_input.text_changed.connect(_on_save_input_changed)
+	_save_input.set_meta("row_id", "save_input")
 	_rows.add_child(_save_input)
 	var actions := HBoxContainer.new()
 	_rows.add_child(actions)
-	actions.add_child(_button("가져오기", _import_save))
+	actions.add_child(_tagged(_button("가져오기", _import_save), "save_import"))
 	if _workshop.has_method("export_save"):
-		actions.add_child(_button("내보내기", _export_save))
-		actions.add_child(_button("텍스트 전체 선택", _select_save_text))
+		actions.add_child(_tagged(_button("내보내기", _export_save), "save_export"))
+		actions.add_child(_tagged(_button("텍스트 전체 선택", _select_save_text), "save_select"))
 	if _workshop.has_method("import_save_bytes"):
 		_render_original_controls()
 	_render_save_status()
+
+## Gives a control an id, so it is found again after a redraw (focus) and by browser QA.
+func _tagged(control: Control, id: String) -> Control:
+	control.set_meta("row_id", id)
+	return control
 
 ## File import keeps a web save's exact bytes; pasting may not (see the note shown here).
 func _render_original_controls() -> void:
 	var files := HBoxContainer.new()
 	_rows.add_child(files)
-	files.add_child(_button("파일에서 가져오기", _import_save_file))
+	files.add_child(_tagged(_button("파일에서 가져오기", _import_save_file), "save_import_file"))
 	var info: Dictionary = _workshop.call("legacy_original_info")
 	var export_original := _button("원본 JS 파일 저장", _export_original_file)
 	export_original.disabled = str(info.status) not in ["ok", "conflict"]
@@ -1469,11 +1485,29 @@ func _render_save_status() -> void:
 
 func _on_save_input_changed() -> void:
 	_save_draft = _save_input.text
+	if _save_draft_stale:
+		_save_draft_stale = false # edited: it is the player's text now
+		_stale_import_armed = false
+		_hide_stale_note() # not a redraw: the field keeps the focus and the caret
+
+## Only once an import has been applied (stored): a failed import leaves the draft as it was.
+func _on_imported() -> void:
+	_stale_import_armed = false
+	if _save_draft.strip_edges().is_empty():
+		return
+	_save_draft_stale = true
+	if _active_tab == TAB_SAVE and is_workshop_open():
+		_rerender_save_tab()
 
 func _import_save() -> void:
 	if _save_input.text.strip_edges().is_empty():
 		_show_feedback("가져올 저장 JSON을 입력하세요.")
 		return
+	if _save_draft_stale and not _stale_import_armed:
+		_stale_import_armed = true
+		_show_feedback("이 입력은 지금 게임의 저장이 아니에요. 그래도 가져오려면 '가져오기'를 한 번 더 누르세요.")
+		return
+	_stale_import_armed = false
 	_workshop.call("import_save", _save_input.text)
 
 func _export_save() -> void:
@@ -1483,8 +1517,21 @@ func _export_save() -> void:
 		return
 	_save_input.text = exported
 	_save_draft = exported
+	_mark_draft_current()
 	_select_save_text()
 	_show_feedback("선택된 저장 텍스트를 복사할 수 있어요.")
+
+## The draft was just filled from the game's save: drop the "not the current save" note.
+func _mark_draft_current() -> void:
+	_stale_import_armed = false
+	if _save_draft_stale:
+		_save_draft_stale = false
+		_hide_stale_note() # not a redraw: the exported text stays selected for copying
+
+func _hide_stale_note() -> void:
+	var note: Control = _buttons_by_id.get("save_draft_stale")
+	if is_instance_valid(note):
+		note.hide()
 
 func _download_save() -> void:
 	if not bool(_workshop.call("download_save")):
@@ -1751,6 +1798,7 @@ func _on_save_action(id: String, from_recovery: bool) -> void:
 	elif is_instance_valid(_save_input):
 		_save_input.text = text
 		_save_draft = text
+		_mark_draft_current()
 		_select_save_text()
 	_show_feedback("선택된 저장 텍스트를 복사해 보관하세요." + (" 파일로도 내려받았어요." if OS.has_feature("web") and id == "export_raw" else ""))
 	_update_recovery()
