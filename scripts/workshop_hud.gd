@@ -123,7 +123,7 @@ func _ready() -> void:
 ## window.__trial_hud_out (JSON). It only reports, except "open", which opens a tab of the menu.
 ##   "controls": the menu's controls with an id, tabs and the close button: {id, kind, text, disabled, popup,
 ##               rect [x, y, w, h] in window pixels, and for a picker with its list open, list {rect, items}};
-##   "view":     {scroll, max, rect} of the list;  "open": opens the tab named by the argument.
+##   "view":     {scroll, max, rect} of the list and the note under it (the menu's last message);  "open": opens the tab named by the argument.
 var _qa_callback: JavaScriptObject
 
 func _qa_hook(args: Array) -> void:
@@ -156,7 +156,7 @@ func _qa_hook(args: Array) -> void:
 			out = list
 		"view":
 			out = {"scroll": _scroll.scroll_vertical, "max": _scroll.get_v_scroll_bar().max_value - _scroll.get_v_scroll_bar().page,
-				"rect": rect_of.call(_scroll), "redraws": redraw_stats}
+				"rect": rect_of.call(_scroll), "redraws": redraw_stats, "note": _panel_note.text}
 	JavaScriptBridge.get_interface("window").__trial_hud_out = JSON.stringify(out)
 
 func open_workshop() -> void:
@@ -1508,7 +1508,11 @@ func _import_save() -> void:
 		_show_feedback("이 입력은 지금 게임의 저장이 아니에요. 그래도 가져오려면 '가져오기'를 한 번 더 누르세요.")
 		return
 	_stale_import_armed = false
-	_workshop.call("import_save", _save_input.text)
+	var started: bool = _workshop.call("import_save", _save_input.text)
+	# Refused (a save still being written, or the text is not a save): the draft is as it was, so the player's
+	# next press tries again at once instead of asking for the confirmation twice more.
+	if not started and _save_draft_stale:
+		_stale_import_armed = true
 
 func _export_save() -> void:
 	var exported := str(_workshop.call("export_save"))
