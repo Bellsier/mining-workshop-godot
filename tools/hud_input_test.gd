@@ -458,6 +458,34 @@ func _held_presses() -> void:
 	_mouse_button(p, false)
 	await _frames(3)
 	_check(float(eco.state.inventory.steel) == steel_held and float(eco.state.gold) == gold_held, "closing the menu during a press acts on nothing")
+	# the window losing its focus during a press (another window comes up with the button held; the release never
+	# comes): the held button does not act, the press ends, and the first click afterwards acts once
+	for focus_out in [Node.NOTIFICATION_WM_WINDOW_FOCUS_OUT, Node.NOTIFICATION_APPLICATION_FOCUS_OUT]:
+		var name := "window" if focus_out == Node.NOTIFICATION_WM_WINDOW_FOCUS_OUT else "application"
+		hud.open_tab("sell")
+		eco.state.inventory["steel"] = 3.0
+		eco.state.inventory["coalBrick"] = 5.0
+		eco.changed.emit()
+		await _frames(3)
+		await _show(_node("steel"))
+		p = _center(_node("steel"))
+		_mouse_move(p)
+		_mouse_button(p, true)
+		await _frames(2)
+		var gold_out := float(eco.state.gold)
+		root.propagate_notification(focus_out)
+		await _frames(3)
+		_check(float(eco.state.inventory.steel) == 3.0 and float(eco.state.gold) == gold_out,
+			"%s focus lost during a press: the held 전량 판매 does not act" % name)
+		_check(not hud._pointer_down, "%s focus lost during a press: the press is over" % name)
+		var bricks: Button = _node("coalBrick")
+		await _show(bricks)
+		var q := _center(bricks)
+		_mouse_move(q) # back in the window, no button held: the old press never got its release
+		_click(q)
+		await _frames(3)
+		_check(float(eco.state.inventory.get("coalBrick", 0)) == 0.0 and float(eco.state.inventory.steel) == 3.0,
+			"%s focus lost during a press: the first click afterwards acts, once (coal bricks %s)" % [name, eco.state.inventory.get("coalBrick")])
 	_churn = true
 
 	# 연구 · 터널 굴착 held while the game changes

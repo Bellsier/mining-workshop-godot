@@ -728,6 +728,21 @@ func _input(event: InputEvent) -> void:
 	elif event is InputEventScreenDrag and bool(_drag.get("active", false)):
 		get_viewport().set_input_as_handled()
 
+## The window lost focus during a press (another window brought up with the button held): the browser will not send
+## the release, so the menu would stay in its "held" state (rows neither added nor removed) until the next click.
+## The press is let go away from what it started on, as at the start of a swipe: nothing acts, and the rows held
+## back during the press come in.
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_WM_WINDOW_FOCUS_OUT and what != NOTIFICATION_APPLICATION_FOCUS_OUT:
+		return
+	if not (_pointer_down or Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)) or not is_inside_tree():
+		return
+	_pointer_down = false
+	_drag = {}
+	_cancel_press()
+	if _stale_rows:
+		_schedule_refresh()
+
 ## A swipe can start on a card, its texts, buttons and pickers, but not on the scroll bar (dragged as it is) or in a
 ## text field (where dragging selects text), and not while a picker's list is open.
 func _can_swipe_from(at: Vector2) -> bool:
@@ -1018,7 +1033,7 @@ func _render_sales(resources: Array, products: Array, recipes: Array, inventory:
 		elif costs != null and _workshop.has_method("buy_auto_sell"):
 			var cost := int(costs.get(id, -1)) if costs is Dictionary else int(costs)
 			if cost >= 0:
-				var buy := _button("자동 판매 열기 · %d G" % cost, _perform.bind("buy_auto_sell", id))
+				var buy := _tagged(_button("자동 판매 열기 · %d G" % cost, _perform.bind("buy_auto_sell", id)), "buy_auto_sell:" + id) as Button
 				buy.disabled = gold < cost
 				actions.add_child(buy)
 
