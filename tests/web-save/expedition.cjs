@@ -102,8 +102,8 @@ async function scenario(browser, origin, touch) {
       if (touch) {
         await shot('mobile-notebook');
         const [x, y, w, h] = await page.evaluate(() => {
-          window.__trial_hud('controls');
-          return JSON.parse(window.__trial_hud_out).find(c => c.id === 'close').rect;
+          window.__trial_hud('close');
+          return JSON.parse(window.__trial_hud_out);
         });
         await page.touchscreen.tap(x + w / 2, y + h / 2);
       } else await page.keyboard.press('Escape');

@@ -131,7 +131,7 @@ func _ready() -> void:
 
 ## Test aid for browser QA, like window.__trial_*: window.__trial_hud(command, argument) answers in
 ## window.__trial_hud_out (JSON). It only reports, except "open", which opens a tab of the menu.
-##   "controls": the menu's controls with an id, tabs and the close button: {id, kind, text, disabled, popup,
+##   "controls": the menu's rows with an id and its tabs: {id, kind, text, disabled, popup,
 ##               rect [x, y, w, h] in window pixels, and for a picker with its list open, list {rect, items}};
 ##   "view":     {scroll, max, rect} of the list, the note under it (the menu's last message) and the tab open;
 ##   "hud":      the world screen's own controls shown (action, bag, bar, torch, garden, hint card, save state);  "open": opens the tab named by the argument.
@@ -164,9 +164,9 @@ func _qa_hook(args: Array) -> void:
 			for i in _tab_buttons.size():
 				if _tab_buttons[i].is_visible_in_tree():
 					list.append({"id": "tab:" + TABS[i], "kind": "Button", "text": TABS[i], "disabled": false, "popup": false, "rect": rect_of.call(_tab_buttons[i])})
-			if _close_button.is_visible_in_tree():
-				list.append({"id": "close", "kind": "Button", "text": _close_button.text, "disabled": false, "popup": false, "rect": rect_of.call(_close_button)})
 			out = list
+		"close":
+			out = rect_of.call(_close_button) if _close_button.is_visible_in_tree() else null
 		"labels":
 			out = []
 			if visible and is_workshop_open():
