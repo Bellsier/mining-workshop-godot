@@ -90,7 +90,7 @@ static func restore(raw: Variant) -> Dictionary:
 		out.erase("forest_step")
 	if out.has("swamp_open"):
 		out.erase("swamp_step")
-	var checkpoint := preload("res://scripts/expedition/temple.gd").clean_checkpoint(raw.get("temple"))
+	var checkpoint := preload("res://scripts/expedition/temple.gd").clean_checkpoint(raw.get("temple"), out.has("mirror") or out.has("pillar"))
 	if not checkpoint.is_empty():
 		out["temple"] = checkpoint
 	return out

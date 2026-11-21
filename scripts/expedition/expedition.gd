@@ -19,6 +19,10 @@ var echo: AudioStreamPlayer
 var finished := false
 var direction_held := ""
 var repeat_after := 0.0
+var direction_buttons := {}
+var direction_pointer := -2
+const NO_POINTER := -2
+const MOUSE_POINTER := -1
 
 func _ready() -> void:
 	region = game.expedition_region
@@ -82,37 +86,88 @@ func _button(text: String, rect: Rect2, id: String) -> Button:
 	button.add_theme_font_override("font", FONT)
 	button.add_theme_font_size_override("font_size", 11)
 	if STEPS.has(id):
-		button.button_down.connect(_begin_direction.bind(id))
-		button.button_up.connect(_end_direction.bind(id))
+		# Movement is handled by native pointer events. Keep the buttons as visual controls.
+		button.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		direction_buttons[id] = button
 	else:
 		button.pressed.connect(_command.bind(id))
 	add_child(button)
 	return button
 
-func _begin_direction(id: String) -> void:
-	direction_held = id
-	repeat_after = 0.33
-	_command(id)
+func _input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch:
+		if event.pressed and not event.canceled:
+			_press_direction(event.index, event.position)
+		else:
+			_release_direction(event.index)
+	elif event is InputEventScreenDrag:
+		_move_direction_pointer(event.index, event.position)
+	elif event.device != InputEvent.DEVICE_ID_EMULATION:
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed:
+				_press_direction(MOUSE_POINTER, event.position)
+			else:
+				_release_direction(MOUSE_POINTER)
+		elif event is InputEventMouseMotion:
+			_move_direction_pointer(MOUSE_POINTER, event.position)
+
+
+func _press_direction(pointer: int, at: Vector2) -> void:
+	if direction_pointer != NO_POINTER or _movement_blocked():
+		return
+	for id: String in direction_buttons:
+		if direction_buttons[id].get_global_rect().has_point(at):
+			direction_pointer = pointer
+			direction_held = id
+			repeat_after = 0.33
+			direction_buttons[id].set_pressed_no_signal(true)
+			get_viewport().set_input_as_handled()
+			_command(id)
+			return
+
+
+func _release_direction(pointer: int) -> void:
+	if pointer == direction_pointer:
+		_cancel_direction()
+		get_viewport().set_input_as_handled()
+
+
+func _move_direction_pointer(pointer: int, at: Vector2) -> void:
+	if pointer != direction_pointer:
+		return
+	if not direction_held.is_empty() and not direction_buttons[direction_held].get_global_rect().has_point(at):
+		_stop_repeat()
+	get_viewport().set_input_as_handled()
+
+
+func _stop_repeat() -> void:
+	if not direction_held.is_empty():
+		direction_buttons[direction_held].set_pressed_no_signal(false)
+		direction_held = ""
+
+
+func _cancel_direction() -> void:
+	_stop_repeat()
+	direction_pointer = NO_POINTER
+
+
+func _movement_blocked() -> bool:
+	return finished or game._transitioning or game.workshop_is_open() or game.workshop.input_frozen()
 
 
 func _notification(what: int) -> void:
-	if what in [NOTIFICATION_WM_WINDOW_FOCUS_OUT, NOTIFICATION_APPLICATION_FOCUS_OUT]:
-		direction_held = ""
-
-
-func _end_direction(id: String) -> void:
-	if direction_held == id:
-		direction_held = ""
+	if what in [NOTIFICATION_WM_WINDOW_FOCUS_OUT, NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_EXIT_TREE]:
+		_cancel_direction()
 
 
 func _process(delta: float) -> void:
 	if direction_held.is_empty():
 		return
-	if not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or game.workshop_is_open():
-		direction_held = ""
+	if _movement_blocked():
+		_cancel_direction()
 		return
 	repeat_after -= delta
-	if repeat_after <= 0:
+	if repeat_after <= 0.0:
 		repeat_after = 0.16
 		_command(direction_held)
 
@@ -132,10 +187,11 @@ func _command(id: String) -> void:
 	if game._transitioning or (game.workshop.input_frozen() and id != "exit"):
 		return
 	if id == "exit":
+		_cancel_direction()
 		game.leave_expedition()
 		return
 	if id == "notebook":
-		direction_held = ""
+		_cancel_direction()
 		game.open_expedition_notebook()
 		return
 	if game.workshop_is_open() or finished:

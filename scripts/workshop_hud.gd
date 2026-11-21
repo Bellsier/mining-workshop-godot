@@ -58,7 +58,7 @@ var _refresh_pending := false
 var _render_key := ""
 ## The tab the list was last drawn for: a redraw of the same tab keeps the player's place, a new tab starts at the top.
 var _rendered_tab := -1
-var _notebook_first := false
+var _notebook_region := ""
 ## Where the pointer (mouse or finger) last was, in this layer's coordinates: the row under it is kept in place.
 var _pointer := Vector2(-INF, -INF)
 ## A press is held on the open menu: a redraw then only updates values in place, so the pressed control stays.
@@ -190,11 +190,11 @@ func open_workshop() -> void:
 func open_inventory() -> void:
 	_open(true)
 
-func open_expedition_notebook() -> void:
-	_notebook_first = true
+func open_expedition_notebook(region: String) -> void:
+	_notebook_region = region
 	_open(true)
 	if not is_workshop_open():
-		_notebook_first = false
+		_notebook_region = ""
 
 ## Opens the workshop menu on a tab by name: "craft" (huts and recipes), "village", "mining", ...
 func open_tab(tab: String) -> void:
@@ -227,7 +227,7 @@ func close_workshop() -> void:
 	_garden.visible = not _garden.text.is_empty()
 	_context_hint.visible = not _context_hint_text.is_empty()
 	_place_action_detail()
-	_notebook_first = false
+	_notebook_region = ""
 	closed.emit()
 
 func is_workshop_open() -> bool:
@@ -609,10 +609,10 @@ func _refresh(force := false) -> void:
 			_names[output] = _names[id]
 	match _active_tab:
 		TAB_INVENTORY:
-			if not _notebook_first:
+			if _notebook_region.is_empty():
 				_render_inventory(inventory)
 			_render_expedition_notebook(state)
-			if _notebook_first:
+			if not _notebook_region.is_empty():
 				_render_inventory(inventory)
 			if not _log.is_empty():
 				_rows.add_child(_label("기록", 12))
@@ -981,7 +981,11 @@ func _render_expedition_notebook(state: Dictionary) -> void:
 	if not goals.is_empty():
 		_rows.add_child(_label("다음 목표", 10))
 		for goal: Dictionary in goals:
-			_add_row(goal.title, goal.text)
+			if goal.region == _notebook_region:
+				_add_row(goal.title, goal.local if not goal.local.is_empty() else goal.text)
+		for goal: Dictionary in goals:
+			if goal.region != _notebook_region:
+				_add_row(goal.title, goal.text)
 	var stamps: Array = state.get("expedition_stamps", [])
 	if not stamps.is_empty():
 		_add_row("탐사 인장 · %d/5" % stamps.size(), "  ·  ".join(PackedStringArray(stamps)))

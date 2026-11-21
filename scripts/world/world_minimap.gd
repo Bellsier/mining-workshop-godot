@@ -50,11 +50,10 @@ func _process(_delta: float) -> void:
 	if key != _ground_key:
 		_ground_key = key
 		_make_ground()
-	if world.tunnel_unlocked:
-		var signature: int = hash([world.story, world.expedition])
-		if signature != _last_goal_hash:
-			_last_goal_hash = signature
-			_goal_points = Guidance.surface_points(world.story, world.expedition)
+	var signature: int = hash([world.tunnel_unlocked, world.story, world.expedition])
+	if signature != _last_goal_hash:
+		_last_goal_hash = signature
+		_goal_points = Guidance.surface_points(world.story, world.expedition) if world.tunnel_unlocked else []
 	queue_redraw()
 
 

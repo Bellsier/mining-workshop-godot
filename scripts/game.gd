@@ -42,7 +42,7 @@ func open_expedition_notebook() -> void:
 	if expedition_region.is_empty() or workshop.input_frozen():
 		return
 	_hud.show()
-	_hud.open_expedition_notebook()
+	_hud.open_expedition_notebook(expedition_region)
 
 
 func leave_expedition() -> void:

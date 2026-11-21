@@ -30,7 +30,7 @@ async function scenario(browser, origin, touch) {
     const shot = async label => {
       if (!process.env.SAVE_QA_OUTPUT) return;
       await mkdir(process.env.SAVE_QA_OUTPUT, { recursive: true });
-      await page.screenshot({ path: path.join(process.env.SAVE_QA_OUTPUT, 'expedition-' + label + '.png') });
+      await page.screenshot({ path: path.join(process.env.SAVE_QA_OUTPUT, 'expedition-' + (touch ? 'phone-' : 'pc-') + label + '.png') });
     };
     const button = async (x, y) => page.touchscreen.tap(viewport.width / 2 + (x - 240) * (viewport.height / 270), y * (viewport.height / 270));
 
@@ -90,9 +90,16 @@ async function scenario(browser, origin, touch) {
       }
     }
     const use = () => touch ? button(407, 231) : page.keyboard.press('e');
-    async function notebook(want, absent = '') {
-      if (touch) await button(434, 14);
-      else await page.keyboard.press('i');
+    async function notebook(want, absent = '', inRoom = true) {
+      if (!touch) await page.keyboard.press('i');
+      else if (inRoom) await button(434, 14);
+      else {
+        const [x, y, w, h] = await page.evaluate(() => {
+          window.__trial_hud('hud');
+          return JSON.parse(window.__trial_hud_out).find(c => c.id === 'bag').rect;
+        });
+        await page.touchscreen.tap(x + w / 2, y + h / 2);
+      }
       await page.waitForFunction(({ text, hidden }) => {
         window.__trial_hud('labels');
         const labels = JSON.parse(window.__trial_hud_out);
@@ -125,12 +132,13 @@ async function scenario(browser, origin, touch) {
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart',
         touchPoints: [{ x: Math.round(viewport.width / 2 + (113 - 240) * viewport.height / 270), y: 299 }] });
       await page.waitForFunction(() => window.__trial_x >= 3 && window.__trial_y === 3);
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-      await cdp.detach();
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 140, y: 170 }] });
       await page.waitForTimeout(140);
       const stopped = await position(page);
       await page.waitForTimeout(300);
-      assert.deepEqual(await position(page), stopped, 'releasing the direction stops movement');
+      assert.deepEqual(await position(page), stopped, 'dragging off the button stops movement before release');
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await cdp.detach();
       await walk('L'.repeat(stopped.x - 2));
       await use(); // schematic
       await saved(p => p.diagram, 'touch schematic');
@@ -153,47 +161,41 @@ async function scenario(browser, origin, touch) {
       await shot('swamp-touch');
       await exit('swamp');
 
-      await start('temple');
-      await use();
-      await button(69, 230);
-      await waitAt(2, 1);
-      await button(113, 256);
-      await saved(p => p.temple?.x === 2 && p.temple?.dir === 1, 'touch temple controls');
-      await shot('temple-touch');
-      await exit('temple');
-    } else {
-      await start('forest');
-      await notebook('뿌리 수로의 바닥 홈 조사');
-      await walk('RD');
-      await use();
-      await walk('RRUUU');
-      await use();
-      await walk('DDDD');
-      await use();
-      await walk('UUUU');
-      await use();
-      await walk('DDRRRRRR');
-      await use();
-      await saved(p => p.forest_path, 'walked through open root gate');
-      await shot('forest');
-      await exit('forest');
+    }
+    await start('forest');
+    await notebook('입구에서 오른쪽 아래 바닥 홈을 읽으세요.', '입구 · 터널 출구에서 북쪽으로 올라가 서쪽 바위벽');
+    await walk('RD');
+    await use();
+    await walk('RRUUU');
+    await use();
+    await walk('DDDD');
+    await use();
+    await walk('UUUU');
+    await use();
+    await walk('DDRRRRRR');
+    await use();
+    await saved(p => p.forest_path, 'walked through open root gate');
+    await shot('forest');
+    await exit('forest');
+    await notebook('입구 · 산 너머 북쪽 벽을 따라', '이끼숲 · 숨은 숲길 끝 조사', false);
 
-      await start('crystal');
-      await walk('R');
-      await use();
-      await walk('RRUU');
-      await use();
-      await walk('DDDD');
-      await use(); await use();
-      await walk('UURRRRRR');
-      await use();
-      await saved(p => p.alive && !p.rescued, 'scientist alive');
-      await use();
-      await saved(p => p.rescued, 'scientist rescued');
-      await notebook('공용 수로 도면 찾기', '별빛 수정 지대 · 과학자 구조');
-      await shot('crystal');
-      await exit('crystal');
+    await start('crystal');
+    await walk('R');
+    await use();
+    await walk('RRUU');
+    await use();
+    await walk('DDDD');
+    await use(); await use();
+    await walk('UURRRRRR');
+    await use();
+    await saved(p => p.alive && !p.rescued, 'scientist alive');
+    await use();
+    await saved(p => p.rescued, 'scientist rescued');
+    await notebook(touch ? '배수반과 공동 수로 복구' : '관측반과 관측소 복구', '별빛 수정 지대 · 과학자 구조');
+    await shot('crystal');
+    await exit('crystal');
 
+    if (!touch) {
       await start('swamp');
       await walk('R'); await use();
       await walk('RRUU'); await use();
@@ -202,68 +204,101 @@ async function scenario(browser, origin, touch) {
       await walk('UURRRRRR'); await use();
       await saved(p => p.swamp_path, 'swamp connected');
       await exit('swamp');
+    }
 
-      await start('village');
-      await walk('RRRUU'); await use();
-      await walk('DDDD'); await use();
-      await walk('UURRR'); await use();
-      await walk('RRR'); await use();
-      await saved(p => p.research, 'scientist joined the shared lab');
-      await use();
-      await saved(p => p.calibration, 'first joint observation');
-      await shot('village');
-      await exit('village');
+    await start('village');
+    await walk('RRRUU'); await use();
+    await walk('DDDD'); await use();
+    await walk('UURRR'); await use();
+    await walk('RRR'); await use();
+    await saved(p => p.research, 'scientist joined the shared lab');
+    await use();
+    await saved(p => p.calibration, 'first joint observation');
+    await shot('village');
+    await exit('village');
 
-      await start('temple');
-      await use();
-      await shot('temple');
-      let facing = 0;
-      async function maze(route) {
-        for (const dir of route) {
-          const next = 'RDLU'.indexOf(dir);
-          while (facing !== next) {
-            await page.keyboard.press('ArrowRight');
-            facing = (facing + 1) % 4;
-          }
-          const p = await position(page);
-          const [, , , dx, dy] = dirs[dir];
-          await page.keyboard.press('ArrowUp');
-          await waitAt(p.x + dx, p.y + dy);
+    await start('temple');
+    await use();
+    await shot('temple');
+    // Route from the real position after every input. Persistent hallucination can turn a step
+    // sideways or keep it up against a wall even after reloading.
+    const tiles = [
+      '###########', '#...#.....#', '#.#.#.###.#', '#.#...#...#', '#.###.#.#.#', '#.....#.#.#',
+      '###.###.#.#', '#...#...#.#', '#.#...#...#', '#.........#', '###########',
+    ];
+    const headings = ['R', 'D', 'L', 'U'];
+    const turn = () => touch ? button(113, 256) : page.keyboard.press('ArrowRight');
+    const step = () => touch ? button(69, 230) : page.keyboard.press('ArrowUp');
+    const dose = () => touch ? button(407, 200) : page.keyboard.press('r');
+    const heading = () => page.evaluate(() => Number(window.__trial_facing));
+    function firstStep(from, gx, gy) {
+      const queue = [[from.x, from.y, -1]];
+      const seen = new Set([from.x + ',' + from.y]);
+      for (const [x, y, first] of queue) {
+        if (x === gx && y === gy) return first;
+        for (let i = 0; i < headings.length; i++) {
+          const [, , , dx, dy] = dirs[headings[i]];
+          const nx = x + dx, ny = y + dy, key = nx + ',' + ny;
+          if (tiles[ny]?.[nx] !== '.' || seen.has(key)) continue;
+          seen.add(key);
+          queue.push([nx, ny, first < 0 ? i : first]);
         }
       }
-      await maze('DDDDRR');
-      await use();
-      await saved(p => p.temple?.circuit === 1, 'temple checkpoint');
-      await page.reload();
-      await scene('WorldMap');
-      await waitAt(...ENTRANCES.temple.slice(0, 2));
-      await enter('temple');
-      await waitAt(3, 5);
-      await maze('DDDRRDRRR');
-      await use();
-      await page.keyboard.press('r');
-      await maze('LLLLLLL');
-      await use();
-      await saved(p => p.pillar, 'pillar ending');
-      await shot('pillar-ending');
-      await exit('temple');
-      await enter('temple');
-      await waitAt(1, 9);
-      await notebook('백미러 조사', '고대 사원 · 돌기둥 조사');
-      await use(); // recorded ending can be revisited without freezing navigation again
-      await page.keyboard.press('r');
-      await maze('RRRRRRRRUUUUUUUU');
-      await use();
-      await saved(p => p.mirror && p.pillar, 'both endings recorded');
-      await shot('mirror-ending');
-      await notebook('탐사 인장 · 5/5');
-      await exit('temple');
+      throw Error('No route in the temple');
     }
+    async function maze(x, y) {
+      const routeLimit = 100;
+      for (let attempt = 0; attempt < routeLimit; attempt++) {
+        const p = await position(page);
+        if (p.x === x && p.y === y) return;
+        const next = firstStep(p, x, y);
+        for (let i = 0; i < 4 && await heading() !== next; i++) {
+          const expected = ((await heading()) + 1) % headings.length;
+          await turn();
+          await page.waitForFunction(d => Number(window.__trial_facing) === d, expected);
+        }
+        await step();
+        await page.waitForTimeout(110);
+      }
+      throw Error('Temple route ended at ' + JSON.stringify(await position(page)) + ' toward ' + x + ',' + y);
+    }
+    await maze(3, 5);
+    await use();
+    const beforeReload = (await saved(p => p.temple?.circuit === 1, 'temple checkpoint')).world.expedition.temple;
+    assert.ok(beforeReload.moves > 0 && Number.isInteger(beforeReload.shadowX));
+    await page.reload();
+    await scene('WorldMap');
+    await waitAt(...ENTRANCES.temple.slice(0, 2));
+    await enter('temple');
+    await waitAt(3, 5);
+    assert.equal(await heading(), beforeReload.dir);
+    await turn();
+    const afterReload = (await saved(p => p.temple?.dir === (beforeReload.dir + 1) % 4, 'turn after resuming')).world.expedition.temple;
+    assert.deepEqual(afterReload, { ...beforeReload, dir: (beforeReload.dir + 1) % 4 }, 'pursuit, fear, doses and move phase survived re-entry');
+    await maze(8, 9);
+    await use();
+    await dose();
+    await maze(1, 9);
+    await use();
+    await saved(p => p.pillar, 'pillar ending');
+    await shot('pillar-ending');
+    await exit('temple');
+    await enter('temple');
+    await waitAt(1, 9);
+    await notebook('백미러 조사', '고대 사원 · 돌기둥 조사');
+    await use(); // recorded ending can be revisited without freezing navigation again
+    await dose();
+    await maze(9, 1);
+    await use();
+    await saved(p => p.mirror && p.pillar, 'both endings recorded');
+    await shot('mirror-ending');
+    await notebook('탐사 인장 · 5/5');
+    await exit('temple');
     assert.deepEqual(errors, []);
     const final = await store.read(page);
     assert.equal(final.state.gold, 0);
     assert.deepEqual(final.state.inventory, {});
-    console.log('EXPEDITION WEB PASS', touch ? '568x320: touch, circuit reload, drained crossing, temple move and turn' : 'five regions, rescue, reconciliation, temple reload and both endings');
+    console.log('EXPEDITION WEB PASS', (touch ? '568x320 touch' : '960x540 keyboard') + ': five regions, puzzle and pursuit reload, 5 stamps and both endings');
   } finally {
     await context.close();
   }

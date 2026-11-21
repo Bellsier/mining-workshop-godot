@@ -21,6 +21,7 @@ const MIRROR := Vector2i(9, 1)
 const PILLAR := Vector2i(1, 9)
 const RELIEF := Vector2i(5, 3)
 const ECHO_START := Vector2i(9, 5)
+const MAX_MOVES := 9007199254740991 # Largest exactly representable integer in a v1 JSON save.
 const DIR := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
 const MARKS := {ENTRY: "경고 벽화", CIRCUIT_A: "첫 번째 봉인 회로", CIRCUIT_B: "두 번째 봉인 회로",
 	MIRROR: "백미러", PILLAR: "돌기둥", RELIEF: "벽감 · 숨 고르기"}
@@ -42,33 +43,44 @@ static func _integer(value: Variant, low: int, high: int, fallback: int) -> int:
 		return int(value)
 	return fallback
 
-static func clean_checkpoint(raw: Variant) -> Dictionary:
+static func clean_checkpoint(raw: Variant, completed := false) -> Dictionary:
 	if not raw is Dictionary:
-		return {}
+		if not completed:
+			return {}
+		raw = {}
 	var x := _integer(raw.get("x"), 1, 9, 1)
 	var y := _integer(raw.get("y"), 1, 9, 1)
-	if not is_floor(Vector2i(x, y)):
-		x = ENTRY.x
-		y = ENTRY.y
-	return {"x": x, "y": y, "dir": _integer(raw.get("dir"), 0, 3, 0), "fear": _integer(raw.get("fear"), 0, 99, 0),
-		"doses": _integer(raw.get("doses"), 0, 2, 2), "circuit": _integer(raw.get("circuit"), 0, 2, 0)}
+	var player := Vector2i(x, y)
+	if not is_floor(player):
+		player = ENTRY
+	var fallback := ENTRY if player.distance_to(ECHO_START) <= 2 else ECHO_START
+	var pursuer := Vector2i(_integer(raw.get("shadowX"), 1, 9, 0), _integer(raw.get("shadowY"), 1, 9, 0))
+	if not is_floor(pursuer) or pursuer == player:
+		pursuer = fallback
+	return {"x": player.x, "y": player.y, "dir": _integer(raw.get("dir"), 0, 3, 0),
+		"fear": _integer(raw.get("fear"), 0, 99, 0), "doses": _integer(raw.get("doses"), 0, 2, 2),
+		"circuit": 2 if completed else _integer(raw.get("circuit"), 0, 2, 0),
+		"moves": _integer(raw.get("moves"), 0, MAX_MOVES, 0), "shadowX": pursuer.x, "shadowY": pursuer.y}
 
 func restore(raw: Variant, progress: Dictionary = {}) -> void:
 	endings.clear()
 	for id in ["mirror", "pillar"]:
 		if progress.has(id):
 			endings.append(id)
-	var saved := clean_checkpoint(raw)
-	if not saved.is_empty():
-		pos = Vector2i(saved.x, saved.y)
-		facing = saved.dir
-		fear = saved.fear
-		doses = saved.doses
-		circuit = saved.circuit
-	shadow = ENTRY if pos.distance_to(ECHO_START) <= 2 and pos.distance_to(ENTRY) > 2 else ECHO_START
+	var saved := clean_checkpoint(raw, not endings.is_empty())
+	if saved.is_empty():
+		saved = clean_checkpoint({})
+	pos = Vector2i(saved.x, saved.y)
+	facing = saved.dir
+	fear = saved.fear
+	doses = saved.doses
+	circuit = saved.circuit
+	moves = saved.moves
+	shadow = Vector2i(saved.shadowX, saved.shadowY)
 
 func checkpoint() -> Dictionary:
-	return {"x": pos.x, "y": pos.y, "dir": facing, "fear": clampi(roundi(fear), 0, 99), "doses": doses, "circuit": circuit}
+	return {"x": pos.x, "y": pos.y, "dir": facing, "fear": clampi(roundi(fear), 0, 99),
+		"doses": doses, "circuit": circuit, "moves": moves, "shadowX": shadow.x, "shadowY": shadow.y}
 
 func recover_at_entrance() -> void:
 	pos = ENTRY
@@ -83,7 +95,8 @@ func step(direction: int) -> bool:
 	var drift := fear >= 60.0 and moves % 4 == 3
 	var heading := posmod(facing + (1 if drift else 0), DIR.size())
 	var dest: Vector2i = pos + DIR[heading] * direction
-	moves += 1
+	# All movement and pursuit periods divide 60. Wrap only at the JSON precision limit.
+	moves = moves % 60 + 1 if moves >= MAX_MOVES else moves + 1
 	if not is_floor(dest):
 		return false
 	pos = dest
