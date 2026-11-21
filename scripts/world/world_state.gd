@@ -15,6 +15,7 @@ const WorldTerrain := preload("res://scripts/world/world_terrain.gd")
 const WorldGen := preload("res://scripts/world/world_gen.gd")
 const ChunkGen := preload("res://scripts/world/chunk_gen.gd")
 const WorldRandom := preload("res://scripts/world/world_random.gd")
+const Story := preload("res://scripts/world/region_story.gd")
 const CraftHuts := preload("res://scripts/craft_huts.gd")
 const SELF_PATH := "res://scripts/world/world_state.gd"
 
@@ -43,6 +44,7 @@ var workshops: Array = []
 var torches: Array = []
 ## The tunnel construction job (web state.world.tunnelContract): {startedAt (ms), durationSec}, or {} for none.
 var tunnel_contract: Dictionary = {}
+var story: Dictionary = {}
 var tunnel_unlocked := false
 var exploration_gear := false
 ## Seeded outer world (web 256 test world). Empty when off.
@@ -322,6 +324,8 @@ func to_dict() -> Dictionary:
 		"mines": saved_mines, "hiddenMineIds": saved_hidden, "tunnelUnlocked": tunnel_unlocked,
 		"workshops": workshops.duplicate(true), "torches": torches.duplicate(true),
 		"tunnelContract": tunnel_contract.duplicate() if not tunnel_contract.is_empty() else null}
+	if not story.is_empty():
+		d["regionStory"] = story.duplicate()
 	if is_seeded():
 		for k in seeded:
 			d[k] = seeded[k].duplicate(true) if seeded[k] is Dictionary else seeded[k]
@@ -331,6 +335,7 @@ func to_dict() -> Dictionary:
 ## dropped (mines must have an id, integer cells inside the bounds and a known resource).
 static func from_dict(d: Dictionary) -> RefCounted:
 	var s: RefCounted = load(SELF_PATH).new()
+	s.story = Story.restore(d.get("regionStory"))
 	s.layout_seed = int(d.get("layoutSeed", 0))
 	var b: Dictionary = d.get("base", {}) if d.get("base") is Dictionary else {}
 	var w := WorldData.world()

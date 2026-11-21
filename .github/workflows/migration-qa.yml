@@ -71,6 +71,12 @@ jobs:
           SAVE_QA_WEB: ${{ runner.temp }}/save-qa-web
           SAVE_QA_OUTPUT: ${{ runner.temp }}/save-qa-results
         run: node hud-browser.cjs
+      - name: Regional story actions survive a browser reload
+        if: ${{ !cancelled() && matrix.browser == 'chromium' }}
+        working-directory: tests/web-save
+        env:
+          SAVE_QA_WEB: ${{ runner.temp }}/save-qa-web
+        run: node region-story.cjs
       - name: Keep browser save evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -113,6 +119,12 @@ jobs:
           ! grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$RUNNER_TEMP/"{gameplay,save,route}.log
           # The recovery test provokes failed writes on purpose; only script errors fail it here.
           ! grep -E 'SCRIPT ERROR:|Parse Error:' "$RUNNER_TEMP/recovery.log"
+      - name: Verify regional investigations, puzzle order and save compatibility
+        run: |
+          set -o pipefail
+          XDG_DATA_HOME="$RUNNER_TEMP/region-story" godot --headless --fixed-fps 60 --script res://tools/region_story_test.gd 2>&1 | tee "$RUNNER_TEMP/region-story.log"
+          grep -Fx 'REGION STORY PASS' "$RUNNER_TEMP/region-story.log"
+          ! grep -E 'SCRIPT ERROR:|^ERROR:' "$RUNNER_TEMP/region-story.log"
       - name: Verify tunnel construction conditions for visual QA
         shell: bash
         run: |

@@ -591,6 +591,11 @@ func _refresh(force := false) -> void:
 	match _active_tab:
 		TAB_INVENTORY:
 			_render_inventory(inventory)
+			if state.get("tunnel", {}).get("open", false):
+				_rows.add_child(_label("탐사 수첩", 12))
+				_add_row("터널 너머 갈림길", "북쪽은 이끼숲, 남쪽은 안개 늪지. 어느 길이든 가까운 표식을 조사하면 이곳에 기록된다.")
+				for note: Dictionary in state.get("story_journal", []):
+					_add_row(note.title, note.text)
 			if not _log.is_empty():
 				_rows.add_child(_label("기록", 12))
 				for line in _log:
@@ -931,7 +936,7 @@ func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: 
 	var automation: Dictionary = state.get("automation", {})
 	var completed: Dictionary = state.get("completed_research", {})
 	match _active_tab:
-		TAB_INVENTORY: return JSON.stringify([shown_quantities, _log.size(), _log.front() if not _log.is_empty() else ""])
+		TAB_INVENTORY: return JSON.stringify([shown_quantities, state.get("tunnel", {}).get("open", false), state.get("story_journal", []), _log.size(), _log.front() if not _log.is_empty() else ""])
 		TAB_MINING: return JSON.stringify([state.get("mining", {}), state.get("hint", ""), floorf(gold)])
 		TAB_CRAFT:
 			var remaining := []
