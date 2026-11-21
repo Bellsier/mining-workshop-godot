@@ -2,7 +2,7 @@ name: World migration QA
 
 on:
   push:
-    branches: ['claude/**', 'codex/godot-world-integration']
+    branches: ['claude/**', 'codex/godot-world-integration', 'codex/all-region-expeditions']
   workflow_dispatch:
 
 permissions:

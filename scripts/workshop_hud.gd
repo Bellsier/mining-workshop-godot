@@ -267,7 +267,7 @@ func set_context_hint(message: String) -> void:
 		_context_hint.visible = not message.is_empty() and not is_workshop_open()
 
 func _unhandled_key_input(event: InputEvent) -> void:
-	if not is_instance_valid(_workshop) or _workshop.input_frozen():
+	if not visible or not is_instance_valid(_workshop) or _workshop.input_frozen():
 		return
 	var key := event as InputEventKey
 	if key == null or not key.pressed or key.echo:

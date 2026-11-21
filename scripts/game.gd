@@ -2,6 +2,10 @@ extends Node
 ## Autoload "Game": changes scenes and remembers where the player should appear.
 ## A door (Area2D with door.gd) calls go(scene, spawn); the next scene puts the player at the Marker2D named spawn.
 
+const SURFACE := "res://scenes/world/world_map.tscn"
+const EXPEDITION := "res://scenes/expedition/expedition.tscn"
+
+var expedition_region := ""
 var spawn_name := "Start"
 var _web_window = null
 var _trace_path := ""
@@ -19,6 +23,24 @@ func go(scene_path: String, spawn: String) -> void:
 	_transitioning = true
 	spawn_name = spawn
 	get_tree().call_deferred("change_scene_to_file", scene_path)
+
+func enter_expedition(region: String) -> void:
+	if _transitioning or workshop.input_frozen() or not is_instance_valid(workshop.player):
+		return
+	workshop._record_position()
+	workshop.player = null
+	_context = ""
+	_context_action = ""
+	_hud.close_workshop()
+	_hud.hide()
+	expedition_region = region
+	go(EXPEDITION, "Start")
+
+
+func leave_expedition() -> void:
+	_restoring_position = true
+	go(SURFACE, "Start")
+
 
 func _ready() -> void:
 	if get_node_or_null("/root/Game") == self:
@@ -54,6 +76,8 @@ func bind_level(level: Node2D, player: Node2D) -> void:
 	_transitioning = false
 	if _hud == null:
 		return
+	expedition_region = ""
+	_hud.show()
 	workshop.player = player
 	_world = null
 	_context = ""
@@ -105,7 +129,7 @@ var _context_action := ""
 var _garden_text := ""
 
 func _unhandled_key_input(event: InputEvent) -> void:
-	if not (event is InputEventKey and event.pressed and not event.echo) or workshop_is_open():
+	if not expedition_region.is_empty() or not (event is InputEventKey and event.pressed and not event.echo) or workshop_is_open():
 		return
 	match event.physical_keycode:
 		KEY_E, KEY_SPACE:

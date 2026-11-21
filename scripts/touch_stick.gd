@@ -34,6 +34,10 @@ func _input(event: InputEvent) -> void:
 	elif event is InputEventScreenDrag and event.index == _finger:
 		_apply((event.position - _origin).limit_length(RADIUS))
 
+func _exit_tree() -> void:
+	if _finger != -1:
+		_apply(Vector2.ZERO)
+
 func _apply(offset: Vector2) -> void:
 	_knob = offset
 	var v := offset / RADIUS

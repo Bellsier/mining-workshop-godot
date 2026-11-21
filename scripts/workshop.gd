@@ -563,6 +563,31 @@ func investigate_landmark(id: String) -> String:
 		changed.emit()
 	return result
 
+func expedition_action(region: String, id: String) -> String:
+	if not world.tunnel_unlocked or input_frozen() or not World.Expeditions.allowed(region, world.story, world.expedition):
+		return ""
+	var before: Dictionary = world.expedition.duplicate(true)
+	var result := World.Expeditions.act(region, id, world.expedition)
+	if before != world.expedition:
+		_record_world()
+		changed.emit()
+	return result
+
+
+func record_temple(checkpoint: Dictionary, endings: Array[String]) -> void:
+	if not world.tunnel_unlocked or input_frozen():
+		return
+	var new_ending := false
+	for ending: String in endings:
+		if not world.expedition.has(ending):
+			world.expedition[ending] = true
+			new_ending = true
+	if new_ending or world.expedition.get("temple") != checkpoint:
+		world.expedition["temple"] = checkpoint
+		_record_world()
+		if new_ending:
+			changed.emit()
+
 # --- world veins (web factory.js secureMine / mineMine, interact.js) --------------------------------------
 
 ## What pressing E at a vein does: "secure" (unsecured, its area open), "mine" (secured), "locked" (its area
@@ -884,7 +909,7 @@ func snapshot() -> Dictionary:
 	for row: Dictionary in data.sites:
 		sites.append({"id": row.key, "name": row.name, "cost": {"gold": row.unlockCost, "products": row.unlockProducts},
 			"unlocked": state.unlocked_sites.get(row.key, false)})
-	return {"story_journal": World.Story.journal(world.story), "gold": state.gold, "inventory": state.inventory, "resources": resources, "recipes": recipes,
+	return {"story_journal": World.Story.journal(world.story) + World.Expeditions.journal(world.expedition), "gold": state.gold, "inventory": state.inventory, "resources": resources, "recipes": recipes,
 		"workers": [{"id": "ticket", "name": "인부 뽑기 (가챠권)", "cost": 0, "tickets": state.tickets},
 			{"id": "gold", "name": "인부 뽑기 (골드)", "cost": data.balance.gacha.PULL_COST_GOLD}],
 		"owned_workers": assigned, "worker_details": workers, "tickets": state.tickets, "research": research,

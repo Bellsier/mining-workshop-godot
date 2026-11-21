@@ -1,6 +1,7 @@
 extends Node2D
 ## Low, ground-level landmarks; actors and trees keep their normal depth order above them.
 const Story := preload("res://scripts/world/region_story.gd")
+const Expeditions := preload("res://scripts/expedition/regions.gd")
 const MOSS := Color("#88b979")
 const COPPER := Color("#efa976")
 const IRON := Color("#30414a")
@@ -69,4 +70,13 @@ func _draw() -> void:
 				else:
 					draw_rect(Rect2(-5, -11, 10, 6), lamp)
 					draw_line(Vector2(-4, -2), Vector2(3, -2), COPPER)
+	for id: String in Expeditions.PORTALS:
+		if not Expeditions.allowed(id, world.story, world.expedition):
+			continue
+		var at: Vector2 = Expeditions.PORTALS[id][0] * 64.0
+		draw_set_transform(at)
+		draw_rect(Rect2(-10, -16, 20, 17), Color("#373b3c"))
+		draw_arc(Vector2(0, -5), 11.0, PI, TAU, 14, Color("#c1a589"), 3)
+		draw_rect(Rect2(-6, -10, 12, 10), Color("#1d262b"))
+		draw_line(Vector2(-9, 2), Vector2(9, 2), COPPER, 2)
 	draw_set_transform(Vector2.ZERO)
