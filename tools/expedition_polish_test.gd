@@ -104,6 +104,7 @@ func _run() -> void:
 	check(w.snapshot().expedition_stamps == reward and w.world.expedition == state, "revisiting does not duplicate rewards")
 	check(w.state.gold == 0 and w.state.inventory.is_empty(), "non-economic rewards")
 	await _test_native_touch()
+	await _test_temple_entry_message()
 	print("EXPEDITION POLISH PASS" if failures == 0 else "EXPEDITION POLISH FAILED")
 	quit(int(failures > 0))
 
@@ -186,3 +187,36 @@ func _drag(index: int, at: Vector2) -> void:
 	event.index = index
 	event.position = at
 	root.push_input(event, true)
+
+
+## Entering the temple (again, after a save and a reload) shows the line for the saved seal progress, not the
+## first visit's: 0/2, 1/2, 2/2 with no ending, one ending, both endings.
+func _test_temple_entry_message() -> void:
+	var game = root.get_node("Game")
+	var w = game.workshop
+	w.world.unlock_tunnel()
+	var cases := [[0, [] as Array[String]], [1, [] as Array[String]], [2, [] as Array[String]], [2, ["mirror"] as Array[String]], [2, ["mirror", "pillar"] as Array[String]]]
+	for c: Array in cases:
+		for ending in ["mirror", "pillar"]:
+			w.world.expedition.erase(ending)
+		var model := Temple.new()
+		model.restore({})
+		model.circuit = c[0]
+		w.record_temple(model.checkpoint(), c[1])
+		_reload(w)
+		change_scene_to_file("res://scenes/world/world_map.tscn")
+		await process_frame
+		await process_frame
+		game.enter_expedition("temple")
+		await process_frame
+		await process_frame
+		var expedition := current_scene
+		var text: String = expedition.message.text
+		var goal: Dictionary = w.Guidance._temple(w.world.expedition)
+		var where := "seal %d/2, endings %s" % [c[0], c[1]]
+		check(int(expedition.temple.circuit) == c[0], "temple restores %s" % where)
+		check(text == (str(goal.local) if not goal.is_empty() else "두 결말을 모두 보았다 · 지상으로 돌아가자"), "entry line follows the journal objective at %s (%s)" % [where, text])
+		check(c[0] == 0 or not text.contains("벽화"), "no warning-mural line once a seal is connected at %s (%s)" % [where, text])
+		game.leave_expedition()
+		await process_frame
+		await process_frame

@@ -2,6 +2,7 @@ extends Node2D
 
 const Regions := preload("res://scripts/expedition/regions.gd")
 const Temple := preload("res://scripts/expedition/temple.gd")
+const Guidance := preload("res://scripts/expedition/guidance.gd")
 const FONT := preload("res://fonts/Galmuri9.ttf")
 const STEPS := {"up": Vector2i.UP, "down": Vector2i.DOWN, "left": Vector2i.LEFT, "right": Vector2i.RIGHT}
 const KEYS := {KEY_W: "up", KEY_UP: "up", KEY_S: "down", KEY_DOWN: "down", KEY_A: "left", KEY_LEFT: "left",
@@ -56,8 +57,16 @@ func _ready() -> void:
 	retreat = _button("지상으로", Rect2(341, 244, 130, 26), "exit")
 	get_viewport().size_changed.connect(_center)
 	_center()
-	message.text = "경고 벽화를 읽자" if region == "temple" else "빛나는 조사 지점 위에서 행동"
+	message.text = _entry_message()
 	_refresh()
+
+## The first line on entering. In the temple it follows the saved seal progress, as the journal's objective
+## does (guidance.gd _temple): the warning mural at 0/2, the second circuit at 1/2, the remaining ending at 2/2.
+func _entry_message() -> String:
+	if region != "temple":
+		return "빛나는 조사 지점 위에서 행동"
+	var goal: Dictionary = Guidance._temple(game.workshop.world.expedition)
+	return str(goal.local) if not goal.is_empty() else "두 결말을 모두 보았다 · 지상으로 돌아가자"
 
 func _center() -> void:
 	position = ((get_viewport_rect().size - Vector2(480, 270)) * 0.5).floor()
