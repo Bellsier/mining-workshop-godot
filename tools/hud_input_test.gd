@@ -667,9 +667,17 @@ func _save_tab_import() -> void:
 	await _frames(3)
 	_check(float(eco.state.gold) == 7.0, "the first 가져오기 with the marked draft imports nothing")
 	_check(str(hud._panel_note.text).contains("한 번 더"), "it says to press again (%s)" % hud._panel_note.text)
+	# the second press lands while a save is being written (web autosave in flight): refused, the draft and the
+	# confirmation stay, and the next press imports without asking again
+	eco._web_operation = "autosave"
+	_click(_center(_button_text("가져오기")))
+	await _frames(3)
+	eco._web_operation = ""
+	_check(float(eco.state.gold) == 7.0 and str(hud._panel_note.text).contains("저장하는 중") and str(hud._panel_note.text).contains("한 번 더 눌러"),
+		"a 가져오기 while a save is being written is refused (%s)" % hud._panel_note.text)
 	_click(_center(_button_text("가져오기")))
 	await _frames(4)
-	_check(float(eco.state.gold) == gold_then, "the second 가져오기 imports it (gold %s)" % eco.state.gold)
+	_check(float(eco.state.gold) == gold_then, "the next 가져오기 imports it without asking again (gold %s)" % eco.state.gold)
 	await _frames(6)
 	hud.open_tab("save")
 	await _frames(4)

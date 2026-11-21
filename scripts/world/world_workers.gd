@@ -275,35 +275,55 @@ func _detour(s: Dictionary, wp: Vector2) -> Vector2:
 
 # --- drawing ---------------------------------------------------------------------------------------------------
 
+## Drawn by the world's objects with the buildings, the trees and the player, in ground order (world_objects.gd);
+## a worker alone only when nobody does that (drawn_elsewhere false).
+var drawn_elsewhere := false
+
+
 func _draw() -> void:
-	var now := Time.get_ticks_msec()
+	if drawn_elsewhere:
+		return
+	for w: Dictionary in shown():
+		draw_worker(self, w.p, w.s)
+
+
+## The workers on the map now: {p, s} (their placement and their walk).
+func shown() -> Array:
+	var out: Array = []
 	for p: Dictionary in _placements:
 		var s: Dictionary = _sim.get(p.id, {})
-		if s.is_empty() or s.hidden:
-			continue
+		if not s.is_empty() and not s.hidden:
+			out.append({"p": p, "s": s})
+	return out
+
+
+## One worker, on `c`.
+func draw_worker(c: CanvasItem, p: Dictionary, s: Dictionary) -> void:
+	var now := Time.get_ticks_msec()
+	if true:
 		var at := Vector2(s.x, s.y) * UNIT
 		var flip := -1.0 if s.dir == "left" else 1.0
 		var shirt: Color = SHIRT.get(p.rarity, SHIRT.common)
 		var helmet: Color = HELMET[int(worker_hash(p.id, 1) * HELMET.size()) % HELMET.size()]
 		var skin: Color = SKIN[int(worker_hash(p.id, 3) * SKIN.size()) % SKIN.size()]
 		var metal := Color("e8c050") if p.rarity == "legend" else Color("9aa0a8")
-		draw_rect(Rect2(at + Vector2(-5, -2), Vector2(10, 2)), Color(0, 0, 0, 0.25))
+		c.draw_rect(Rect2(at + Vector2(-5, -2), Vector2(10, 2)), Color(0, 0, 0, 0.25))
 		var bob := 0.0
 		if s.mode == "walk":
 			bob = -1.0 if int(s.walked / 0.11) % 2 == 1 else 0.0
-		draw_rect(Rect2(at + Vector2(-3, -7 + bob), Vector2(2, 5)), Color("3d4049"))
-		draw_rect(Rect2(at + Vector2(1, -7 + bob), Vector2(2, 5)), Color("4a4e58"))
-		draw_rect(Rect2(at + Vector2(-4, -14 + bob), Vector2(8, 7)), shirt)
-		draw_rect(Rect2(at + Vector2(-3, -20 + bob), Vector2(7, 6)), skin)
-		draw_rect(Rect2(at + Vector2(-4, -22 + bob), Vector2(9, 3)), helmet)
+		c.draw_rect(Rect2(at + Vector2(-3, -7 + bob), Vector2(2, 5)), Color("3d4049"))
+		c.draw_rect(Rect2(at + Vector2(1, -7 + bob), Vector2(2, 5)), Color("4a4e58"))
+		c.draw_rect(Rect2(at + Vector2(-4, -14 + bob), Vector2(8, 7)), shirt)
+		c.draw_rect(Rect2(at + Vector2(-3, -20 + bob), Vector2(7, 6)), skin)
+		c.draw_rect(Rect2(at + Vector2(-4, -22 + bob), Vector2(9, 3)), helmet)
 		if s.mode == "work":
 			# web tdWorkerFrame: raise, overhead, strike, recover
 			var frame := int((now / float(p.cycle_ms) + float(p.phase)) * 4.0) % 4
 			var angle: float = [-0.6, -1.4, 0.5, 0.0][frame]
 			var hand := at + Vector2(3 * flip, -12)
 			var tip := hand + Vector2(cos(angle) * flip, sin(angle)) * 9.0
-			draw_line(hand, tip, Color("8a6440"), 1.5)
-			draw_line(tip + Vector2(-3, 1).rotated(angle) * Vector2(flip, 1), tip + Vector2(3, -1).rotated(angle) * Vector2(flip, 1), metal, 2.0)
+			c.draw_line(hand, tip, Color("8a6440"), 1.5)
+			c.draw_line(tip + Vector2(-3, 1).rotated(angle) * Vector2(flip, 1), tip + Vector2(3, -1).rotated(angle) * Vector2(flip, 1), metal, 2.0)
 		else:
-			draw_line(at + Vector2(2 * flip, -10 + bob), at + Vector2(-4 * flip, -18 + bob), Color("8a6440"), 1.5)
-			draw_rect(Rect2(at + Vector2(-6 * flip - 1, -20 + bob), Vector2(2, 4)), metal)
+			c.draw_line(at + Vector2(2 * flip, -10 + bob), at + Vector2(-4 * flip, -18 + bob), Color("8a6440"), 1.5)
+			c.draw_rect(Rect2(at + Vector2(-6 * flip - 1, -20 + bob), Vector2(2, 4)), metal)

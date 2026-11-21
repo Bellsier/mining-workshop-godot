@@ -28,7 +28,7 @@ async function serve() {
     if (route === '/favicon.ico') { res.writeHead(204); return res.end(); }
     if (route === originFixture) {
       res.setHeader('Content-Type', 'text/html');
-      return res.end('<!doctype html><title>Isolated save QA</title>');
+      return res.end('<!doctype html><title>Isolated save QA</title><link rel="icon" href="data:,">');
     }
     const file = path.resolve(root, '.' + (route === '/' ? '/index.html' : route));
     if (!file.startsWith(root + path.sep)) { res.writeHead(404); return res.end(); }

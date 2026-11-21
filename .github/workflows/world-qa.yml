@@ -109,6 +109,24 @@ jobs:
           set -o pipefail
           timeout 300 godot --headless --path . --fixed-fps 60 --script res://tools/hud_reconcile_test.gd 2>&1 | tee "$RUNNER_TEMP/hud-reconcile.log"
           grep -F 'HUD RECONCILE PASS' "$RUNNER_TEMP/hud-reconcile.log"
+      - name: World look and feedback (web sprites, clouds, fireflies, sway, rising texts, next-step card)
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout 300 godot --headless --path . --fixed-fps 60 --script res://tools/world_effects_test.gd 2>&1 | tee "$RUNNER_TEMP/world-effects.log"
+          grep -F 'WORLD EFFECTS PASS' "$RUNNER_TEMP/world-effects.log"
+      - name: Long play with every effect on (nodes, objects and memory do not pile up)
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout 600 godot --headless --path . --fixed-fps 60 --script res://tools/world_long_run_bench.gd -- --check 2>&1 | tee "$RUNNER_TEMP/world-long-run.log"
+          grep -F 'WORLD LONG RUN DONE' "$RUNNER_TEMP/world-long-run.log"
+      - name: World action button with long labels (568x320, 740x360, 960x540)
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout 300 godot --headless --path . --fixed-fps 60 --script res://tools/hud_action_test.gd 2>&1 | tee "$RUNNER_TEMP/hud-action.log"
+          grep -F 'HUD ACTION PASS' "$RUNNER_TEMP/hud-action.log"
       - name: Menu redraws while the game runs (rows added per 100 ticks, frame times)
         shell: bash
         run: |

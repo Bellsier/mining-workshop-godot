@@ -16,6 +16,9 @@ const PassageDoor := preload("res://scripts/world/world_passage_door.gd")
 const WorldObjects := preload("res://scripts/world/world_objects.gd")
 const Layout := preload("res://scripts/village_layout.gd")
 const FONT := preload("res://fonts/Galmuri9.ttf")
+const Sprites := preload("res://scripts/world/world_sprites.gd")
+const WorldSway := preload("res://scripts/world/world_sway.gd")
+const WorldFloats := preload("res://scripts/world/world_floats.gd")
 
 const UNIT := 64.0
 const REACH := 0.6
@@ -24,10 +27,6 @@ const INTERACT_RANGE := 1.15
 ## web TD_DOOR: in front of a door it is picked over a nearer point to the side; behind a building it counts
 ## farther; facing it breaks a near tie. Only the order of what is in reach changes, never the reach.
 const DOOR := {"FRONT_DEPTH": 0.9, "FRONT": 0.3, "BEHIND": 0.5, "FACING": 0.15}
-const VEIN_COLORS := {
-	"iron": Color("b6a698"), "coal": Color("707281"), "mana": Color("58c9a6"), "crystal": Color("a9dafb"),
-	"rareMetal": Color("edbd64"), "relic": Color("df8b66"), "cosmicShard": Color("c99aee"), "plasma": Color("ea7ec7"),
-}
 
 @export var seeded_world := false
 @export var world_seed := 12345
@@ -45,6 +44,9 @@ var _place := ""
 var _near_vein: Dictionary = {}
 var _target: Dictionary = {}
 var objects: Node2D
+## The scenery as last drawn (the sway layer draws its trees and grass from it every frame).
+var scenery_now: Array = []
+var floats: Node2D
 
 func _ready() -> void:
 	var game := get_node_or_null("/root/Game")
@@ -66,10 +68,20 @@ func _ready() -> void:
 	_place_spawns()
 	_add_static_box("base", Vector2(state.base), WorldData.obstacle_boxes().get("base", {}))
 	_sync_bodies()
+	# Trees and grass sway, so they are drawn by a layer of their own every frame, right after this node's own
+	# drawing (before the huts, the village and the workers, as when they were drawn here).
+	var sway := WorldSway.new()
+	sway.name = "Sway"
+	add_child(sway)
+	move_child(sway, 0)
 	objects = WorldObjects.new()
 	objects.name = "Objects"
 	add_child(objects)
 	objects.setup(_economy(), state, player)
+	sway.setup(self, objects.light)
+	floats = WorldFloats.new()
+	floats.name = "Floats"
+	add_child(floats)
 	if state.tunnel_unlocked and entry == "FromTunnel":
 		_add_passage_door() # legacy trial route only; normal play stays on one map
 	_build_ui()
@@ -210,7 +222,12 @@ func _physics_process(delta: float) -> void:
 	var text: String = place.label
 	text += "  ·  광맥 %d/%d" % [state.discovered_count(), state.mines.size()]
 	if not _target.is_empty():
-		text += "\nE  ·  " + str(_target.label)
+		# as on the action button: a long label's cost is shown once, on the line above the button
+		var hud: Variant = get_node("/root/Game").get("_hud")
+		var shown := str(_target.label)
+		if hud != null and hud.has_method("action_text_for"):
+			shown = hud.action_text_for(shown)
+		text += "\nE  ·  " + shown
 	if text != _place:
 		_place = text
 		_region_label.text = text
@@ -232,6 +249,9 @@ func show_toast(text: String) -> void:
 
 func _on_discovered(mine: Dictionary) -> void:
 	show_toast("새 광맥 발견: %s (%d, %d)" % [WorldData.resource_name(mine.resource), int(mine.x), int(mine.y)])
+	# a float over the vein itself, so the find is seen where it is
+	if floats != null:
+		floats.add("새 광맥! " + WorldData.resource_name(mine.resource), to_px(Vector2(mine.x, mine.y)), Color("bff3ff"))
 	queue_redraw()
 
 func _build_ui() -> void:
@@ -268,9 +288,10 @@ func _build_ui() -> void:
 func _draw() -> void:
 	for p: Dictionary in WorldTerrain.peaks(state.tunnel_unlocked):
 		_draw_peak(to_px(Vector2(p.x, p.y)), p.size)
-	_draw_base(to_px(Vector2(state.base)))
-	for p: Dictionary in _scenery():
-		_draw_prop(p)
+	scenery_now = _scenery()
+	for p: Dictionary in scenery_now:
+		if not WorldSway.sways(str(p.kind)):
+			_draw_prop(p)
 	for m: Dictionary in state.mines:
 		_draw_vein(m)
 
@@ -280,55 +301,24 @@ func _draw_peak(at: Vector2, size: float) -> void:
 	draw_colored_polygon(PackedVector2Array([at + Vector2(-w / 2, 8), at + Vector2(0, 8 - h), at + Vector2(w / 2, 8)]), Color8(95, 90, 85))
 	draw_colored_polygon(PackedVector2Array([at + Vector2(-w / 5, 8 - h * 0.6), at + Vector2(0, 8 - h), at + Vector2(w / 5, 8 - h * 0.6)]), Color8(232, 236, 240))
 
-func _draw_base(at: Vector2) -> void:
-	draw_rect(Rect2(at + Vector2(-25, -28), Vector2(50, 22)), Color8(120, 92, 60))
-	draw_colored_polygon(PackedVector2Array([at + Vector2(-30, -27), at + Vector2(0, -44), at + Vector2(30, -27)]), Color8(150, 70, 52))
-	draw_rect(Rect2(at + Vector2(-5, -18), Vector2(10, 12)), Color8(66, 48, 34))
-	draw_string_outline(FONT, at + Vector2(-10, -48), "공방", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, 3, Color("241b19"))
-	draw_string(FONT, at + Vector2(-10, -48), "공방", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("f7e1b8"))
-
+## web tdOreSprite: a mossy rock while hidden (with a "?" to say something is there), the ore's colours once
+## found, a staked flag once secured; a ring round the one in reach.
 func _draw_vein(m: Dictionary) -> void:
 	var at := to_px(Vector2(m.x, m.y))
 	var known: bool = state.is_discovered(m)
-	var color: Color = VEIN_COLORS.get(m.resource, Color.GRAY) if known else Color8(120, 116, 110)
-	draw_colored_polygon(PackedVector2Array([at + Vector2(-9, 4), at + Vector2(-7, -5), at + Vector2(0, -9),
-		at + Vector2(7, -7), at + Vector2(10, 0), at + Vector2(6, 5), at + Vector2(-6, 6)]), color.darkened(0.45))
-	draw_colored_polygon(PackedVector2Array([at + Vector2(-6, 0), at + Vector2(-3, -5), at + Vector2(3, -6),
-		at + Vector2(6, -1), at + Vector2(1, 2)]), color)
+	var look := "undiscovered" if not known else "secured" if m.get("developmentState") == "secured" else "discovered"
+	var sprite := Sprites.ore(str(m.resource), look)
+	draw_texture(sprite, Sprites.origin(sprite, at, Sprites.ANCHOR.ore))
 	if not known:
-		draw_string(FONT, at + Vector2(-3, 1), "?", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color8(230, 226, 214))
+		draw_string_outline(FONT, at + Vector2(-3, -6), "?", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, 3, Color("241b19"))
+		draw_string(FONT, at + Vector2(-3, -6), "?", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color8(230, 226, 214))
 	elif not _near_vein.is_empty() and _near_vein.id == m.id:
-		draw_arc(at, 12.0, 0.0, TAU, 24, Color("f0d599"), 1.0)
+		draw_arc(at + Vector2(0, -4), 14.0, 0.0, TAU, 24, Color("f0d599"), 1.0)
 
+## web tdPropSprite, drawn at the prop's ground point (trees and grass are drawn by the sway layer).
 func _draw_prop(p: Dictionary) -> void:
-	var at := to_px(Vector2(p.x, p.y))
-	var s: float = p.size
-	match str(p.kind):
-		"bigTree", "sparseTree":
-			var r := (14.0 if p.kind == "bigTree" else 9.0) * s
-			draw_rect(Rect2(at + Vector2(-2, -6), Vector2(4, 7)), Color8(60, 44, 32))
-			draw_circle(at + Vector2(0, -6 - r), r, Color8(56, 92, 58) if p.kind == "bigTree" else Color8(78, 120, 68))
-		"grass":
-			for i in 3:
-				draw_line(at + Vector2(i * 3 - 3, 0), at + Vector2(i * 3 - 4, -5 * s), Color8(107, 155, 85), 1.0)
-		"rock":
-			draw_colored_polygon(PackedVector2Array([at + Vector2(-6, 1) * s, at + Vector2(-3, -5) * s, at + Vector2(4, -6) * s, at + Vector2(6, 1) * s]), Color8(118, 113, 106))
-		"crystal", "exposedVein":
-			var c := Color8(169, 218, 251) if p.kind == "crystal" else Color8(237, 189, 100)
-			draw_colored_polygon(PackedVector2Array([at + Vector2(-4, 0), at + Vector2(0, -12 * s), at + Vector2(4, 0)]), c)
-		"clearing", "diggingMarks":
-			draw_arc(at, 10.0 * s, 0.0, TAU, 16, Color8(150, 122, 86), 1.0)
-		"timberSupport":
-			draw_rect(Rect2(at + Vector2(-6, -12), Vector2(2, 12)), Color8(120, 92, 60))
-			draw_rect(Rect2(at + Vector2(4, -12), Vector2(2, 12)), Color8(120, 92, 60))
-			draw_rect(Rect2(at + Vector2(-7, -14), Vector2(14, 3)), Color8(96, 70, 44))
-		"mineCart":
-			draw_rect(Rect2(at + Vector2(-8, -8), Vector2(16, 7)), Color8(96, 90, 85))
-			draw_circle(at + Vector2(-5, 0), 2.0, Color8(40, 36, 32))
-			draw_circle(at + Vector2(5, 0), 2.0, Color8(40, 36, 32))
-		"oldShaftEntrance":
-			draw_rect(Rect2(at + Vector2(-13, -16), Vector2(26, 16)), Color8(96, 70, 44))
-			draw_rect(Rect2(at + Vector2(-9, -12), Vector2(18, 12)), Color8(30, 26, 24))
+	var sprite := Sprites.prop(str(p.kind))
+	draw_texture(sprite, Sprites.origin(sprite, to_px(Vector2(p.x, p.y)), Sprites.ANCHOR.prop))
 
 func _economy() -> Node:
 	var game := get_node_or_null("/root/Game")
@@ -492,9 +482,14 @@ func interact(id: String) -> String:
 				"secure":
 					if economy.secure_vein(str(t.id)):
 						show_toast("확보!")
+						floats.add("광맥 확보!", to_px(Vector2(t.x, t.y)))
 						queue_redraw()
 				"mine":
-					economy.mine_vein(str(t.id))
+					var vein: Dictionary = state.mine_by_id(str(t.id))
+					if economy.mine_vein(str(t.id)):
+						var amount: float = float(vein.miningPower) * float(economy._multiplier())
+						var name: String = WorldData.resource_name(vein.resource)
+						floats.add("+%s %s" % [WorldFloats._format(amount), name], to_px(Vector2(t.x, t.y)), WorldFloats.OK_COLOR, 24.0, name, amount)
 				_:
 					show_toast(str(t.label))
 		"base":

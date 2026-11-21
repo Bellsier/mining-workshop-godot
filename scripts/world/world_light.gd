@@ -4,6 +4,8 @@ extends Node2D
 ## coloured glow, and the map is laid over the world once. So any number of lights costs one small map and one
 ## screen pass (Godot's own 2D lights shade every pixel of everything once per light, which halved the frame
 ## rate of the software-rendered web build). The map shrinks by itself when frames get slow (web tdQualityFor).
+## Cloud shadows drift over the land (web tdCloudShadows, not at the lowest quality) and fireflies come out at dusk
+## (web tdFireflies, full quality only).
 ## Drawing only: no game value depends on it and nothing is saved.
 
 const Layout := preload("res://scripts/village_layout.gd")
@@ -22,6 +24,8 @@ const VEIN_RGB := {
 	"cosmicShard": Color8(0xe0, 0x6f, 0xa8), "plasma": Color8(0xff, 0x4f, 0xcf),
 }
 const WARM := Color8(255, 210, 130)
+## web TD_LIGHT.FIREFLY_DARK: fireflies come out above this darkness.
+const FIREFLY_DARK := 0.2
 
 ## Clears the dark: dst *= (1 - a), where a is the hole's strength times its soft edge. Multiplying colour and
 ## alpha alike keeps the map premultiplied, as the canvas 'destination-out' of the web leaves it.
@@ -48,6 +52,11 @@ var _glows: Node2D
 var _hole_tex: Texture2D
 var _glow_tex: Texture2D
 var _lights: Array = []
+var _clouds: Node2D
+var _flies: Node2D
+var _cloud_tex: Texture2D
+var _fly_tex: Texture2D
+var _now := 0.0
 var _darkness := MIN_DARK
 var _frames := 0
 var _frame_avg := -1.0
@@ -81,6 +90,25 @@ func setup(game_economy: Node, world_state: RefCounted, walker: Node2D, worker_n
 	var shown := CanvasItemMaterial.new()
 	shown.blend_mode = CanvasItemMaterial.BLEND_MODE_PREMULT_ALPHA
 	material = shown
+	# Cloud shadows: over the ground and everything on it, under the dusk (web tdRenderClouds before the lighting).
+	_cloud_tex = _radial([[0.0, 1.0], [0.2, 1.0], [1.0, 0.0]])
+	_clouds = Node2D.new()
+	_clouds.name = "CloudShadows"
+	_clouds.z_index = 3999
+	_clouds.z_as_relative = false
+	_clouds.draw.connect(_draw_clouds)
+	add_child(_clouds)
+	# Fireflies: added light over the dusk (web 'lighter').
+	_fly_tex = _radial([[0.0, 1.0], [1.0, 0.0]])
+	_flies = Node2D.new()
+	_flies.name = "Fireflies"
+	_flies.z_index = 4001
+	_flies.z_as_relative = false
+	var added := CanvasItemMaterial.new()
+	added.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	_flies.material = added
+	_flies.draw.connect(_draw_flies)
+	add_child(_flies)
 
 
 ## A radial fade from the centre to the edge of the square, white with these [offset, alpha] stops.
@@ -116,6 +144,37 @@ static func darkness(now_ms: float) -> float:
 ## web tdFlicker
 static func flicker(now_ms: float, seed: float) -> float:
 	return 0.88 + 0.12 * sin(now_ms / 140.0 + seed) * sin(now_ms / 53.0 + seed * 1.7)
+
+
+## web tdCloudShadows: three large soft shapes drifting slowly west to east, in world units {x, y, r}.
+static func cloud_shadows(map_rect: Rect2, now_ms: float) -> Array:
+	var span := map_rect.size.x + 12.0
+	var out: Array = []
+	for i in 3:
+		var speed := 0.12 + i * 0.03
+		var x := map_rect.position.x - 6.0 + fmod(now_ms / 1000.0 * speed + i * span / 3.0, span)
+		out.append({"x": x, "y": -7.0 + i * 7.0 + sin(now_ms / 20000.0 + i) * 1.5, "r": 3.2 + i * 0.6})
+	return out
+
+
+## web tdFireflies: a handful of drifting motes near the workshop (and the trees beyond the tunnel once it is
+## open), only at dusk, in world units {x, y, glow}.
+## (Plain numbers, not Vector2, whose single precision would round the positions.)
+static func fireflies(base_x: float, base_y: float, tunnel_open: bool, now_ms: float, dark: float) -> Array:
+	if dark < FIREFLY_DARK:
+		return []
+	var anchors: Array = [[base_x + 1.2, base_y + 0.6], [base_x - 1.4, base_y + 0.9], [base_x + 0.4, base_y - 1.4]]
+	if tunnel_open:
+		anchors.append_array([[-7.0, -2.0], [-8.0, 3.0], [-6.5, 6.0]])
+	var out: Array = []
+	for i in anchors.size():
+		var ax: float = anchors[i][0]
+		var ay: float = anchors[i][1]
+		for k in 2:
+			var t := now_ms / 1000.0 + i * 3.1 + k * 7.7
+			out.append({"x": ax + sin(t * 0.37 + k) * 0.9 + sin(t * 1.3) * 0.15, "y": ay + cos(t * 0.29 + k * 2) * 0.6,
+				"glow": 0.5 + 0.5 * sin(t * 2.3 + k)})
+	return out
 
 
 ## web tdQualityFor: 0 full, 1 reduced, 2 low, from the average frame time in ms.
@@ -206,6 +265,7 @@ func _process(delta: float) -> void:
 		if _checks % 30 == 0:
 			quality = quality_for(_frame_avg, quality)
 	var now := Time.get_unix_time_from_system() * 1000.0
+	_now = now
 	_darkness = force_darkness if force_darkness >= 0.0 else darkness(now)
 	var spots: Array = []
 	if workers != null:
@@ -224,6 +284,8 @@ func _process(delta: float) -> void:
 	_dark.queue_redraw()
 	_holes.queue_redraw()
 	_glows.queue_redraw()
+	_clouds.queue_redraw()
+	_flies.queue_redraw()
 	queue_redraw()
 
 
@@ -275,3 +337,35 @@ func _draw() -> void:
 	var top_left := inverse * Vector2.ZERO
 	var bottom_right := inverse * screen
 	draw_texture_rect(_map.get_texture(), Rect2(top_left, bottom_right - top_left), false)
+
+
+## The part of the world on screen, in world pixels, with a margin.
+func _view(margin: float) -> Rect2:
+	var inverse := get_viewport().get_canvas_transform().affine_inverse()
+	return Rect2(inverse * Vector2.ZERO, Vector2.ZERO).expand(inverse * get_viewport_rect().size).grow(margin)
+
+
+## web tdRenderClouds: soft dark ellipses (1.6 wide, 0.8 high), 10 % at the middle.
+func _draw_clouds() -> void:
+	if quality >= 2 or world == null:
+		return
+	var view := _view(0.0)
+	for c: Dictionary in cloud_shadows(world.map_rect(), _now):
+		var at := Vector2(c.x, c.y) * UNIT
+		var r: float = c.r * UNIT
+		var area := Rect2(at - Vector2(r * 1.6, r * 0.8), Vector2(r * 3.2, r * 1.6))
+		if area.intersects(view):
+			_clouds.draw_texture_rect(_cloud_tex, area, false, Color(10 / 255.0, 20 / 255.0, 20 / 255.0, 0.10))
+
+
+## web tdRenderLighting fireflies: a pale green glow 6 px round with a one-pixel bright mote.
+func _draw_flies() -> void:
+	if quality != 0 or world == null:
+		return
+	var view := _view(20.0)
+	for f: Dictionary in fireflies(float(world.base.x), float(world.base.y), world.tunnel_unlocked, _now, _darkness):
+		var at := Vector2(f.x, f.y) * UNIT
+		if not view.has_point(at):
+			continue
+		_flies.draw_texture_rect(_fly_tex, Rect2(at - Vector2(6, 6), Vector2(12, 12)), false, Color(220 / 255.0, 1.0, 140 / 255.0, 0.35 * f.glow))
+		_flies.draw_rect(Rect2(at.round(), Vector2.ONE), Color(240 / 255.0, 1.0, 190 / 255.0, 0.5 + 0.5 * f.glow))

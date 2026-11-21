@@ -41,7 +41,7 @@ async function serve() {
   const mime = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.png': 'image/png' };
   const server = createServer(async (req, res) => {
     const route = new URL(req.url, 'http://127.0.0.1').pathname;
-    if (route === fixture) { res.setHeader('Content-Type', 'text/html'); return res.end('<!doctype html><title>QA</title>'); }
+    if (route === fixture) { res.setHeader('Content-Type', 'text/html'); return res.end('<!doctype html><title>QA</title><link rel="icon" href="data:,">'); }
     const file = path.resolve(root, '.' + (route === '/' ? '/index.html' : route));
     if (!file.startsWith(root + path.sep)) { res.writeHead(404); return res.end(); }
     try {
@@ -132,10 +132,10 @@ async function hold(page, key, ms) {
 
 /// Walks with the arrow keys until the player's feet are within `reach` units of (tx, ty); walks around what
 /// blocks the way.
-async function walkTo(page, tx, ty, reach = 0.8) {
+async function walkTo(page, tx, ty, reach = 0.8, steps = 260) {
   const keys = { x: [ 'ArrowLeft', 'ArrowRight' ], y: [ 'ArrowUp', 'ArrowDown' ] };
   let stuck = 0;
-  for (let i = 0; i < 260; i++) {
+  for (let i = 0; i < steps; i++) {
     const p = await position(page);
     const dx = tx - p.x, dy = ty - p.y;
     if (Math.hypot(dx, dy) <= reach) return p;
@@ -387,16 +387,21 @@ async function partB(page, origin, state) {
     'B: 의뢰 commissions the tunnel (5,000 G and 5 alloy)', { contract: s.world.tunnelContract, gold: [ gold0, s.gold ] });
 
   // The tunnel is west of the base, on the road below it (x < -6.25 is past it).
-  const westward = async () => {
-    await walkTo(page, base.x, 1.6, 0.35);
+  // The land beyond is reached by walking west and round what stands in the way (the village is laid out
+  // differently in every new game: a building or its ruins can stand on the straight line west). Whether the
+  // walk reached the point beyond, and how far west it got, are both reported, never dropped.
+  const beyond = { x: -9, y: 1.55 };
+  const westward = async (steps) => {
     const from = await position(page);
-    await hold(page, 'ArrowLeft', 4000);
-    return { from, to: await position(page) };
+    let reached = true, error = null;
+    try { await walkTo(page, beyond.x, beyond.y, 0.8, steps); } catch (e) { reached = false; error = e.message; }
+    return { from, to: await position(page), reached, error };
   };
   await page.keyboard.press('Escape');
   await delay(300);
-  const blocked = await westward();
-  check(blocked.to.x > -6.25, 'B: while it is dug the tunnel still blocks the way west', blocked);
+  // closed: even walking round the village, the way west stops at the mountains
+  const blocked = await westward(80);
+  check(!blocked.reached && blocked.to.x > -6.25, 'B: while it is dug the tunnel still blocks the way west', blocked);
 
   if (process.env.PC_PLAY_SKIP_TUNNEL_WAIT) {
     info('B: the tunnel\'s 600 s wait and the walk through were skipped (PC_PLAY_SKIP_TUNNEL_WAIT)');
@@ -432,8 +437,9 @@ async function partB(page, origin, state) {
     check(s.gold > gold1, 'B: automatic selling earned gold meanwhile', { from: gold1, to: s.gold });
     await page.keyboard.press('Escape');
     await delay(300);
-    const through = await westward();
+    const through = await westward(260);
     check(through.to.x < -6.25, 'B: the player walks west through the open tunnel', through);
+    check(through.reached, 'B: and reaches the land beyond it (-9, 1.55)', through);
     await shot(page, 'b-tunnel');
   }
 

@@ -946,6 +946,9 @@ func next_hint() -> String:
 		var step := ""
 		if float(state.inventory.get("steel", 0)) > 0.0 or _has(steel.need):
 			step = "공방 앞에서 열기 버튼을 눌러 강철을 만들어 파세요." if touch else "공방 앞에서 E를 눌러 강철을 만들어 파세요."
+		elif not world.mines.any(func(m: Dictionary) -> bool: return m.get("developmentState") == "secured" and m.resource in ["iron", "coal"]):
+			# The first press on a vein secures it (web secureMine); only then does it give ore.
+			step = "철광석·석탄 광맥 앞에서 행동 버튼으로 광맥을 확보한 뒤 캐세요." if touch else "철광석·석탄 광맥 앞에서 E를 눌러 광맥을 확보한 뒤 캐세요."
 		else:
 			step = "광맥 앞에서 행동 버튼으로 철광석과 석탄을 캐세요." if touch else "광맥 앞에서 E를 눌러 철광석과 석탄을 캐세요."
 		return step + " 첫 가챠권까지 " + progress
@@ -1653,7 +1656,8 @@ func download_legacy_original() -> bool:
 
 func _import(json_text: String, bytes: PackedByteArray, origin: String) -> bool:
 	if not _web_operation.is_empty():
-		return _reject("저장 확인 중이에요. 잠시 후 다시 시도해 주세요.")
+		# the save protection: one write at a time. The draft and the stale-draft confirmation stay (workshop_hud).
+		return _reject("지금 저장하는 중이라 가져오지 않았어요. 잠시 뒤 가져오기를 한 번 더 눌러 주세요.")
 	var imported := Save.import_text(json_text, bytes, origin)
 	if imported.is_empty() or not _valid_save_state(imported):
 		return _reject("저장 JSON 형식이나 버전을 확인해 주세요.")

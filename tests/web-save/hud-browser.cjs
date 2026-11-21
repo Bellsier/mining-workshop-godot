@@ -10,7 +10,8 @@
 //   phone    QA-04  swipes on a card's text, from a picker and from a button scroll the list, press and open nothing
 //            QA-01  5 typed, 자유 납품 tapped at once → 5 shipped;  QA-05  전량 판매 held 420 ms by touch → sold
 //            the picker's list by touch; typing while the page is shortened (an on-screen keyboard) → kept, shipped;
-//            every control of every tab can be scrolled fully into view (tap sizes saved to phone-tap-sizes.json)
+//            each of the 9 tabs opens with a tap; every control of every tab can be scrolled fully into view
+//            (tap sizes saved to phone-tap-sizes.json)
 // Prints one line per check and "HUD BROWSER PASS n/n", exits 1 on any failure. Screenshots go to SAVE_QA_OUTPUT.
 const assert = require('node:assert/strict');
 const { createServer } = require('node:http');
@@ -35,7 +36,7 @@ async function serve() {
   const mime = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.png': 'image/png' };
   const server = createServer(async (req, res) => {
     const route = new URL(req.url, 'http://127.0.0.1').pathname;
-    if (route === fixture) { res.setHeader('Content-Type', 'text/html'); return res.end('<!doctype html><title>QA</title>'); }
+    if (route === fixture) { res.setHeader('Content-Type', 'text/html'); return res.end('<!doctype html><title>QA</title><link rel="icon" href="data:,">'); }
     const file = path.resolve(root, '.' + (route === '/' ? '/index.html' : route));
     if (!file.startsWith(root + path.sep)) { res.writeHead(404); return res.end(); }
     try {
@@ -225,13 +226,28 @@ async function desktop(browser, origin) {
   check((await control(page, 'save_input')).text === exported, 'desktop: the earlier export is still in the field');
   const importButton = await reveal(page, 'save_import');
   await page.mouse.click(importButton.x, importButton.y);
-  await delay(1500);
+  let note = '';
+  for (let k = 0; k < 30 && !note.includes('한 번 더'); k++) { await delay(100); note = (await hud(page, 'view')).note; }
+  check(note.includes('한 번 더'), 'desktop: the first 가져오기 with the marked draft asks to press it again', { note });
+  await delay(1000);
   let current = (await store.read(page)).state;
   check(!!current.legacy_web_save_sha256 && current.gold !== goldThen, 'desktop: the first 가져오기 with the marked draft changes nothing', { gold: current.gold });
-  await page.mouse.click(importButton.x, importButton.y);
+  // The game refuses an import while a save is being written (every 2 s here, as gold keeps moving; longer on a
+  // slow machine) and says so: a player presses again, and the draft stays confirmed for that press.
+  let busy = 0;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const again = await reveal(page, 'save_import');
+    await page.mouse.click(again.x, again.y);
+    current = await savedState(page, s => !s.legacy_web_save_sha256, 4000);
+    if (!current.legacy_web_save_sha256 || !(await hud(page, 'view')).note.includes('저장하는 중')) break;
+    busy++;
+    await delay(500);
+  }
+  if (busy) console.log('INFO desktop: 가져오기 was refused while a save was being written, pressed again', JSON.stringify({ busy }));
   // the export came from before the file import: importing it brings that save back (no JS original in it)
   current = await savedState(page, s => !s.legacy_web_save_sha256);
-  check(!current.legacy_web_save_sha256 && current.gold >= goldThen, 'desktop: the second 가져오기 imports it', { gold: current.gold, exportedGold: goldThen });
+  check(!current.legacy_web_save_sha256 && current.gold >= goldThen, 'desktop: the second 가져오기 imports it',
+    { gold: current.gold, exportedGold: goldThen, note: (await hud(page, 'view')).note });
   await page.screenshot({ path: path.join(out, 'desktop-save-tab.png') });
   check(errors.length === 0, 'desktop: no page errors', errors.slice(0, 3));
   await context.close();
@@ -322,6 +338,18 @@ async function phone(browser, origin) {
   await page.screenshot({ path: path.join(out, 'phone-keyboard.png') });
   await page.setViewportSize(viewport);
   await delay(600);
+  // all nine tabs open with a tap on their button
+  await hud(page, 'open', 'inventory');
+  await delay(300);
+  const tabButtons = (await hud(page, 'controls')).filter(c => c.id.startsWith('tab:'));
+  const tabsOpened = [];
+  for (let t = 0; t < tabButtons.length; t++) {
+    const [x, y, w, h] = tabButtons[t].rect;
+    await page.touchscreen.tap(x + w / 2, y + h / 2);
+    await delay(300);
+    tabsOpened.push((await hud(page, 'view')).tab);
+  }
+  check(tabButtons.length === 9 && tabsOpened.every((tab, t) => tab === t), 'phone: each of the 9 tabs opens with a tap on its button', { tabsOpened });
   // small screen: every control of every tab can be scrolled fully into view; tap sizes are recorded
   const sizes = [];
   let unreachable = [];

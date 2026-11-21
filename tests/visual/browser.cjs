@@ -13,7 +13,7 @@ async function serve(root) {
     const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
     if (pathname === '/__qa_fixture') {
       res.setHeader('Content-Type', 'text/html');
-      return res.end('<!doctype html><title>Isolated visual QA fixture</title>');
+      return res.end('<!doctype html><title>Isolated visual QA fixture</title><link rel="icon" href="data:,">');
     }
     const file = path.resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
     if (!file.startsWith(root + path.sep)) {
@@ -91,8 +91,9 @@ async function holdKey(page, key, operation) {
   finally { await page.keyboard.up(key); }
 }
 
-async function walkTo(page, axis, target, tolerance = 6) {
-  for (let attempt = 0; attempt < 4; attempt++) {
+// `attempts`: how many key holds to get there (a slow, busy machine moves the player in bigger, later steps).
+async function walkTo(page, axis, target, tolerance = 6, attempts = 4) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const current = (await position(page))[axis];
     if (Math.abs(current - target) <= tolerance) return;
     const forward = current < target;

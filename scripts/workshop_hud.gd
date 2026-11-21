@@ -22,6 +22,11 @@ var _garden: Button
 var _garden_callback := Callable()
 var _action_label := ""
 var _action_callback := Callable()
+## A label too long for the action button is split at its first " · ": the action stays on the button, the rest
+## (a cost, counts) goes on this line above it, in full.
+var _action_detail: Label
+var _action_head := ""
+var _action_rest := ""
 var _context_hint: Label
 var _context_hint_text := ""
 var _overlay: ColorRect
@@ -109,6 +114,7 @@ func _ready() -> void:
 	add_child(surface)
 	surface.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_build_bar(surface)
+	_build_hint(surface)
 	_build_overlay(surface)
 	_build_toast(surface)
 	_build_recovery(surface)
@@ -123,7 +129,8 @@ func _ready() -> void:
 ## window.__trial_hud_out (JSON). It only reports, except "open", which opens a tab of the menu.
 ##   "controls": the menu's controls with an id, tabs and the close button: {id, kind, text, disabled, popup,
 ##               rect [x, y, w, h] in window pixels, and for a picker with its list open, list {rect, items}};
-##   "view":     {scroll, max, rect} of the list;  "open": opens the tab named by the argument.
+##   "view":     {scroll, max, rect} of the list, the note under it (the menu's last message) and the tab open;
+##   "hud":      the world screen's own controls shown (action, bag, bar, torch, garden, hint card, save state);  "open": opens the tab named by the argument.
 var _qa_callback: JavaScriptObject
 
 func _qa_hook(args: Array) -> void:
@@ -156,7 +163,14 @@ func _qa_hook(args: Array) -> void:
 			out = list
 		"view":
 			out = {"scroll": _scroll.scroll_vertical, "max": _scroll.get_v_scroll_bar().max_value - _scroll.get_v_scroll_bar().page,
-				"rect": rect_of.call(_scroll), "redraws": redraw_stats}
+				"rect": rect_of.call(_scroll), "redraws": redraw_stats, "note": _panel_note.text, "tab": _active_tab if is_workshop_open() else -1}
+		"hud":
+			var shown: Array = []
+			for pair: Array in [["action", _action], ["bag", _inventory_button], ["bar", _bar], ["torch", _torch], ["garden", _garden], ["hint", _hint_card], ["save", _save_indicator]]:
+				var c: Control = pair[1]
+				if is_instance_valid(c) and c.is_visible_in_tree():
+					shown.append({"id": pair[0], "rect": rect_of.call(c), "text": str(c.get("text")) if c.get("text") != null else ""})
+			out = shown
 	JavaScriptBridge.get_interface("window").__trial_hud_out = JSON.stringify(out)
 
 func open_workshop() -> void:
@@ -190,10 +204,12 @@ func close_workshop() -> void:
 	_overlay.hide()
 	_bar.show()
 	_save_indicator.show()
+	_update_hint()
 	_action.visible = not _action_label.is_empty()
 	_torch.visible = _torch_callback.is_valid()
 	_garden.visible = not _garden.text.is_empty()
 	_context_hint.visible = not _context_hint_text.is_empty()
+	_place_action_detail()
 
 func is_workshop_open() -> bool:
 	return is_instance_valid(_overlay) and _overlay.visible
@@ -201,9 +217,31 @@ func is_workshop_open() -> bool:
 func set_action(label: String, callback: Callable = Callable()) -> void:
 	_action_label = label
 	_action_callback = callback
+	_action_head = label
+	_action_rest = ""
 	if is_instance_valid(_action):
-		_action.text = label
+		var font := _action.get_theme_font("font")
+		var room := ACTION_WIDTH - 12.0
+		var cut := label.find(" · ")
+		if cut > 0 and font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, _action.get_theme_font_size("font_size")).x > room:
+			_action_head = label.substr(0, cut)
+			_action_rest = label.substr(cut + 3)
+		_action.text = _action_head
 		_action.visible = not label.is_empty() and not is_workshop_open()
+		_action_detail.text = _action_rest
+		_place_action_detail()
+
+## What the action button shows for `label` (the action alone when its cost went to the detail line).
+func action_text_for(label: String) -> String:
+	return _action_head if label == _action_label else label
+
+## The detail line sits over the key hint, or over the garden button while that is shown; it grows upward.
+func _place_action_detail() -> void:
+	if not is_instance_valid(_action_detail):
+		return
+	_action_detail.offset_bottom = -78.0 if _garden.visible else -58.0
+	_action_detail.offset_top = _action_detail.offset_bottom - 1.0
+	_action_detail.visible = not _action_rest.is_empty() and _action.visible
 
 ## Shows the garden button with `label` ("" hides it); pressing it calls `callback`.
 func set_garden(label: String, callback: Callable = Callable()) -> void:
@@ -211,6 +249,7 @@ func set_garden(label: String, callback: Callable = Callable()) -> void:
 	if is_instance_valid(_garden):
 		_garden.text = label
 		_garden.visible = not label.is_empty() and not is_workshop_open()
+		_place_action_detail()
 
 ## Shows the torch button on touch screens while `callback` is valid (the world map), hides it otherwise.
 func set_torch(callback: Callable) -> void:
@@ -219,6 +258,9 @@ func set_torch(callback: Callable) -> void:
 		_torch.visible = _torch_callback.is_valid() and not is_workshop_open()
 
 func set_context_hint(message: String) -> void:
+	# the key hint names the action as the button does (its cost is on the line above)
+	if not _action_rest.is_empty() and message.ends_with(_action_label):
+		message = message.substr(0, message.length() - _action_label.length()) + _action_head
 	_context_hint_text = message
 	if is_instance_valid(_context_hint):
 		_context_hint.text = message
@@ -250,8 +292,10 @@ func _open(only_inventory: bool) -> void:
 	for index in range(_tab_buttons.size()):
 		_tab_buttons[index].visible = not only_inventory or index in [TAB_INVENTORY, TAB_SAVE]
 	_bar.hide()
+	_hint_card.hide()
 	_save_indicator.hide()
 	_action.hide()
+	_action_detail.hide()
 	_torch.hide()
 	_garden.hide()
 	_context_hint.hide()
@@ -261,6 +305,58 @@ func _open(only_inventory: bool) -> void:
 	_scroll.scroll_vertical = 0
 	_rendered_tab = -1 # start at the top, not at the place kept from the last drawing
 	_refresh(true)
+
+## The action button's width (it keeps it whatever the label).
+const ACTION_WIDTH := 104.0
+
+## The "다음 할 일" card (web #nextHint in the world view): what to do next, at the top left next to the map, while
+## the menu is closed. It fades while the player walks under it (web td-hint-under / td-hint-near).
+var _hint_card: PanelContainer
+var _hint_text: Label
+
+func _build_hint(surface: Control) -> void:
+	_hint_card = PanelContainer.new()
+	_hint_card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	surface.add_child(_hint_card)
+	_hint_card.position = Vector2(84, 5)
+	_hint_card.custom_minimum_size = Vector2(186, 0)
+	_hint_card.size = Vector2(186, 0)
+	var lines := VBoxContainer.new()
+	lines.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lines.add_theme_constant_override("separation", 1)
+	_hint_card.add_child(lines)
+	var title := _label("다음 할 일", 9)
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	title.add_theme_color_override("font_color", Color("f1c577"))
+	lines.add_child(title)
+	_hint_text = _label("", 9)
+	_hint_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hint_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_hint_text.max_lines_visible = 3
+	_hint_text.custom_minimum_size.x = 178
+	lines.add_child(_hint_text)
+	_hint_card.hide()
+
+func _update_hint() -> void:
+	var hint: String = str(_workshop.call("next_hint")) if _workshop.has_method("next_hint") else ""
+	if hint != _hint_text.text:
+		_hint_text.text = hint
+		_hint_card.reset_size()
+	_hint_card.visible = not hint.is_empty() and not is_workshop_open() and not _workshop.input_frozen()
+
+func _process(_delta: float) -> void:
+	if _hint_card == null or not _hint_card.visible or not is_instance_valid(_workshop):
+		return
+	var walker: Variant = _workshop.get("player")
+	var alpha := 1.0
+	if walker is Node2D and is_instance_valid(walker) and (walker as Node2D).is_inside_tree():
+		var at: Vector2 = (walker as Node2D).get_global_transform_with_canvas().origin
+		var area := _hint_card.get_global_rect()
+		if area.grow(6).has_point(at):
+			alpha = 0.15
+		elif area.grow(40).has_point(at):
+			alpha = 0.5
+	_hint_card.modulate.a = move_toward(_hint_card.modulate.a, alpha, 0.1)
 
 func _build_bar(surface: Control) -> void:
 	_save_indicator = _label("", 10)
@@ -308,10 +404,14 @@ func _build_bar(surface: Control) -> void:
 	_torch.offset_right = -116
 	_torch.offset_bottom = -8
 	_action.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
-	_action.offset_left = -112
+	_action.offset_left = -8 - ACTION_WIDTH
 	_action.offset_top = -38
 	_action.offset_right = -8
 	_action.offset_bottom = -8
+	# a fixed size: a long label never pushes it off the screen (set_action keeps the text short)
+	_action.clip_text = true
+	_action.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_action.custom_minimum_size = Vector2(ACTION_WIDTH, 0)
 	_context_hint = _label("", 10)
 	_context_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_context_hint.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -323,6 +423,20 @@ func _build_bar(surface: Control) -> void:
 	_context_hint.offset_top = -57
 	_context_hint.offset_right = -8
 	_context_hint.offset_bottom = -40
+	_action_detail = _label("", 10)
+	_action_detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_action_detail.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+	_action_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_action_detail.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_action_detail.add_theme_color_override("font_color", Color("f1c577"))
+	_action_detail.add_theme_constant_override("outline_size", 4)
+	_action_detail.add_theme_color_override("font_outline_color", Color("211c18"))
+	surface.add_child(_action_detail)
+	_action_detail.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	_action_detail.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_action_detail.offset_left = -228
+	_action_detail.offset_right = -8
+	_action_detail.hide()
 
 func _build_overlay(surface: Control) -> void:
 	_overlay = ColorRect.new()
@@ -426,6 +540,7 @@ func _refresh(force := false) -> void:
 	_gold.text = format_quantity(float(_workshop.get("state").get("gold", 0))) + " G"
 	_panel_gold.text = _gold.text
 	if not is_workshop_open():
+		_update_hint()
 		return
 	var state: Dictionary = _workshop.call("snapshot")
 	var gold := float(state.get("gold", 0))
@@ -1508,7 +1623,11 @@ func _import_save() -> void:
 		_show_feedback("이 입력은 지금 게임의 저장이 아니에요. 그래도 가져오려면 '가져오기'를 한 번 더 누르세요.")
 		return
 	_stale_import_armed = false
-	_workshop.call("import_save", _save_input.text)
+	var started: bool = _workshop.call("import_save", _save_input.text)
+	# Refused (a save still being written, or the text is not a save): the draft is as it was, so the player's
+	# next press tries again at once instead of asking for the confirmation twice more.
+	if not started and _save_draft_stale:
+		_stale_import_armed = true
 
 func _export_save() -> void:
 	var exported := str(_workshop.call("export_save"))
