@@ -134,6 +134,9 @@ jobs:
           XDG_DATA_HOME="$RUNNER_TEMP/expedition" godot --headless --fixed-fps 60 --script res://tools/expedition_test.gd 2>&1 | tee "$RUNNER_TEMP/expedition.log"
           grep -Fx 'EXPEDITION PASS' "$RUNNER_TEMP/expedition.log"
           ! grep -E 'SCRIPT ERROR:|^ERROR:' "$RUNNER_TEMP/expedition.log"
+          XDG_DATA_HOME="$RUNNER_TEMP/expedition-polish" godot --headless --script res://tools/expedition_polish_test.gd 2>&1 | tee "$RUNNER_TEMP/expedition-polish.log"
+          grep -Fx 'EXPEDITION POLISH PASS' "$RUNNER_TEMP/expedition-polish.log"
+          ! grep -E 'SCRIPT ERROR:|^ERROR:' "$RUNNER_TEMP/expedition-polish.log"
       - name: Verify tunnel construction conditions for visual QA
         shell: bash
         run: |

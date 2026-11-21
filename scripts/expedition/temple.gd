@@ -53,7 +53,11 @@ static func clean_checkpoint(raw: Variant) -> Dictionary:
 	return {"x": x, "y": y, "dir": _integer(raw.get("dir"), 0, 3, 0), "fear": _integer(raw.get("fear"), 0, 99, 0),
 		"doses": _integer(raw.get("doses"), 0, 2, 2), "circuit": _integer(raw.get("circuit"), 0, 2, 0)}
 
-func restore(raw: Variant) -> void:
+func restore(raw: Variant, progress: Dictionary = {}) -> void:
+	endings.clear()
+	for id in ["mirror", "pillar"]:
+		if progress.has(id):
+			endings.append(id)
 	var saved := clean_checkpoint(raw)
 	if not saved.is_empty():
 		pos = Vector2i(saved.x, saved.y)
@@ -135,7 +139,8 @@ func use() -> String:
 		MIRROR, PILLAR:
 			if circuit < 2: return "두 봉인 회로를 먼저 연결하라"
 			var ending := "mirror" if pos == MIRROR else "pillar"
-			if not endings.has(ending):
-				endings.append(ending)
+			if endings.has(ending):
+				return "이미 본 결말 · 수첩에서 다시 읽기"
+			endings.append(ending)
 			return "백미러 너머에서 발소리가 멎었다" if ending == "mirror" else "돌기둥에 잔광이 내려앉았다"
 	return "벽 너머에서 발소리가 한 번 울렸다"

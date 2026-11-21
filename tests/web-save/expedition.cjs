@@ -90,6 +90,28 @@ async function scenario(browser, origin, touch) {
       }
     }
     const use = () => touch ? button(407, 231) : page.keyboard.press('e');
+    async function notebook(want, absent = '') {
+      if (touch) await button(434, 14);
+      else await page.keyboard.press('i');
+      await page.waitForFunction(({ text, hidden }) => {
+        window.__trial_hud('labels');
+        const labels = JSON.parse(window.__trial_hud_out);
+        return labels.some(label => label.includes(text)) &&
+          (!hidden || !labels.some(label => label.includes(hidden)));
+      }, { text: want, hidden: absent });
+      if (touch) {
+        await shot('mobile-notebook');
+        const [x, y, w, h] = await page.evaluate(() => {
+          window.__trial_hud('controls');
+          return JSON.parse(window.__trial_hud_out).find(c => c.id === 'close').rect;
+        });
+        await page.touchscreen.tap(x + w / 2, y + h / 2);
+      } else await page.keyboard.press('Escape');
+      await page.waitForFunction(() => {
+        window.__trial_hud('labels');
+        return JSON.parse(window.__trial_hud_out).length === 0;
+      });
+    }
     const exit = async id => {
       if (touch) await button(407, 259);
       else await page.keyboard.press('Escape');
@@ -98,8 +120,20 @@ async function scenario(browser, origin, touch) {
     };
     if (touch) {
       await start('swamp');
-      await walk('R');
+      await notebook('수문실 결선도 읽기');
+      const cdp = await context.newCDPSession(page);
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart',
+        touchPoints: [{ x: Math.round(viewport.width / 2 + (113 - 240) * viewport.height / 270), y: 299 }] });
+      await page.waitForFunction(() => window.__trial_x >= 3 && window.__trial_y === 3);
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await cdp.detach();
+      await page.waitForTimeout(140);
+      const stopped = await position(page);
+      await page.waitForTimeout(300);
+      assert.deepEqual(await position(page), stopped, 'releasing the direction stops movement');
+      await walk('L'.repeat(stopped.x - 2));
       await use(); // schematic
+      await saved(p => p.diagram, 'touch schematic');
       await walk('RRUU');
       await use(); // earth terminal
       await saved(p => p.swamp_step === 1, 'touch circuit autosave');
@@ -107,6 +141,7 @@ async function scenario(browser, origin, touch) {
       await scene('WorldMap');
       await waitAt(...ENTRANCES.swamp.slice(0, 2));
       await enter('swamp');
+      await notebook('귀환 연결', '안개 늪지 · 1/3 접지 연결');
       await walk('RRRR');
       await use(); // return terminal
       await walk('LDD');
@@ -128,6 +163,7 @@ async function scenario(browser, origin, touch) {
       await exit('temple');
     } else {
       await start('forest');
+      await notebook('뿌리 수로의 바닥 홈 조사');
       await walk('RD');
       await use();
       await walk('RRUUU');
@@ -154,6 +190,7 @@ async function scenario(browser, origin, touch) {
       await saved(p => p.alive && !p.rescued, 'scientist alive');
       await use();
       await saved(p => p.rescued, 'scientist rescued');
+      await notebook('공용 수로 도면 찾기', '별빛 수정 지대 · 과학자 구조');
       await shot('crystal');
       await exit('crystal');
 
@@ -212,11 +249,14 @@ async function scenario(browser, origin, touch) {
       await exit('temple');
       await enter('temple');
       await waitAt(1, 9);
+      await notebook('백미러 조사', '고대 사원 · 돌기둥 조사');
+      await use(); // recorded ending can be revisited without freezing navigation again
       await page.keyboard.press('r');
       await maze('RRRRRRRRUUUUUUUU');
       await use();
       await saved(p => p.mirror && p.pillar, 'both endings recorded');
       await shot('mirror-ending');
+      await notebook('탐사 인장 · 5/5');
       await exit('temple');
     }
     assert.deepEqual(errors, []);

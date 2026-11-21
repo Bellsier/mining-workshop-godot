@@ -3,6 +3,7 @@ extends Control
 ## secured ones), torches, the village facilities (grey while ruined, coloured once open), the house, the
 ## workshop, the player and the part of the world on screen. Hidden veins never show.
 
+const Guidance := preload("res://scripts/expedition/guidance.gd")
 const WorldTiles := preload("res://scripts/world/world_tiles.gd")
 const Layout := preload("res://scripts/village_layout.gd")
 const VEIN := {
@@ -17,6 +18,8 @@ var player: Node2D
 var _ground: ImageTexture
 var _ground_key := ""
 var _rect := Rect2()
+var _last_goal_hash := -1
+var _goal_points: Array[Vector2] = []
 
 
 func setup(world_state: RefCounted, game_economy: Node, walker: Node2D) -> void:
@@ -47,6 +50,11 @@ func _process(_delta: float) -> void:
 	if key != _ground_key:
 		_ground_key = key
 		_make_ground()
+	if world.tunnel_unlocked:
+		var signature: int = hash([world.story, world.expedition])
+		if signature != _last_goal_hash:
+			_last_goal_hash = signature
+			_goal_points = Guidance.surface_points(world.story, world.expedition)
 	queue_redraw()
 
 
@@ -82,6 +90,9 @@ func _draw() -> void:
 			var door: Dictionary = Layout.district_parts(village.district).house
 			draw_rect(Rect2(_at(door.x, door.y).round() - Vector2(2, 3), Vector2(4, 3)), Color("4f8246"))
 	draw_rect(Rect2(_at(world.base.x, world.base.y).round() - Vector2(2, 2), Vector2(4, 4)), Color("d68b3d"))
+	for at: Vector2 in _goal_points:
+		var p := _at(at.x, at.y).round()
+		draw_colored_polygon(PackedVector2Array([p + Vector2(0, -3), p + Vector2(3, 0), p + Vector2(0, 3), p + Vector2(-3, 0)]), Color("#f4c87f"))
 	if is_instance_valid(player):
 		var u := player.position / 64.0
 		draw_rect(Rect2(_at(u.x, u.y).round() - Vector2(1, 1), Vector2(3, 3)), Color.WHITE)

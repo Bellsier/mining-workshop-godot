@@ -5,7 +5,7 @@ const Temple := preload("res://scripts/expedition/temple.gd")
 const FONT := preload("res://fonts/Galmuri9.ttf")
 const STEPS := {"up": Vector2i.UP, "down": Vector2i.DOWN, "left": Vector2i.LEFT, "right": Vector2i.RIGHT}
 const KEYS := {KEY_W: "up", KEY_UP: "up", KEY_S: "down", KEY_DOWN: "down", KEY_A: "left", KEY_LEFT: "left",
-	KEY_D: "right", KEY_RIGHT: "right", KEY_E: "use", KEY_SPACE: "use", KEY_R: "dose", KEY_ESCAPE: "exit"}
+	KEY_D: "right", KEY_RIGHT: "right", KEY_E: "use", KEY_SPACE: "use", KEY_R: "dose", KEY_I: "notebook", KEY_ESCAPE: "exit"}
 
 @onready var game: Node = get_node("/root/Game")
 var region: String
@@ -17,6 +17,8 @@ var action: Button
 var retreat: Button
 var echo: AudioStreamPlayer
 var finished := false
+var direction_held := ""
+var repeat_after := 0.0
 
 func _ready() -> void:
 	region = game.expedition_region
@@ -27,7 +29,7 @@ func _ready() -> void:
 	game.report("Expedition/" + region, Vector2(1, 3), "")
 	if region == "temple":
 		temple = Temple.new()
-		temple.restore(game.workshop.world.expedition.get("temple"))
+		temple.restore(game.workshop.world.expedition.get("temple"), game.workshop.world.expedition)
 		room = preload("res://scripts/expedition/temple_view.gd").new()
 		room.model = temple
 	else:
@@ -35,18 +37,19 @@ func _ready() -> void:
 		room.region = region
 		room.progress = game.workshop.world.expedition
 	add_child(room)
-	status = _label(Rect2(8, 2, 464, 20), 12)
-	message = _label(Rect2(150, 223, 194, 44), 10)
+	status = _label(Rect2(8, 3, 362, 20), 11)
+	message = _label(Rect2(153, 215, 180, 50), 10)
 	message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	if region == "temple":
 		_setup_audio()
-		_button("항정신제", Rect2(351, 193, 120, 28), "dose")
-	_button("↑", Rect2(48, 219, 42, 24), "up")
-	_button("←", Rect2(4, 245, 42, 24), "left")
-	_button("↓", Rect2(48, 245, 42, 24), "down")
-	_button("→", Rect2(92, 245, 42, 24), "right")
-	action = _button("조사", Rect2(351, 220, 120, 25), "use")
-	retreat = _button("지상으로", Rect2(351, 245, 120, 24), "exit")
+		_button("항정신제", Rect2(341, 185, 130, 31), "dose")
+	_button("수첩", Rect2(397, 1, 74, 26), "notebook")
+	_button("↑", Rect2(51, 205, 44, 31), "up")
+	_button("←", Rect2(4, 237, 44, 32), "left")
+	_button("↓", Rect2(51, 237, 44, 32), "down")
+	_button("→", Rect2(98, 237, 44, 32), "right")
+	action = _button("조사", Rect2(341, 217, 130, 26), "use")
+	retreat = _button("지상으로", Rect2(341, 244, 130, 26), "exit")
 	get_viewport().size_changed.connect(_center)
 	_center()
 	message.text = "경고 벽화를 읽자" if region == "temple" else "빛나는 조사 지점 위에서 행동"
@@ -78,11 +81,40 @@ func _button(text: String, rect: Rect2, id: String) -> Button:
 	button.focus_mode = Control.FOCUS_NONE
 	button.add_theme_font_override("font", FONT)
 	button.add_theme_font_size_override("font_size", 11)
-	button.pressed.connect(_command.bind(id))
+	if STEPS.has(id):
+		button.button_down.connect(_begin_direction.bind(id))
+		button.button_up.connect(_end_direction.bind(id))
+	else:
+		button.pressed.connect(_command.bind(id))
 	add_child(button)
 	return button
 
+func _begin_direction(id: String) -> void:
+	direction_held = id
+	repeat_after = 0.33
+	_command(id)
+
+
+func _end_direction(id: String) -> void:
+	if direction_held == id:
+		direction_held = ""
+
+
+func _process(delta: float) -> void:
+	if direction_held.is_empty():
+		return
+	if not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or game.workshop_is_open():
+		direction_held = ""
+		return
+	repeat_after -= delta
+	if repeat_after <= 0:
+		repeat_after = 0.16
+		_command(direction_held)
+
+
 func _unhandled_key_input(event: InputEvent) -> void:
+	if game.workshop_is_open():
+		return
 	if not event is InputEventKey or not event.pressed or not KEYS.has(event.physical_keycode):
 		return
 	var id: String = KEYS[event.physical_keycode]
@@ -97,13 +129,19 @@ func _command(id: String) -> void:
 	if id == "exit":
 		game.leave_expedition()
 		return
-	if finished:
+	if id == "notebook":
+		direction_held = ""
+		game.open_expedition_notebook()
+		return
+	if game.workshop_is_open() or finished:
 		return
 	if region == "temple":
 		_temple_command(id)
 	elif STEPS.has(id):
 		if not room.step(STEPS[id]):
 			message.text = "길이 막혀 있다"
+		else:
+			message.text = ""
 	elif id == "use" and not room.target().is_empty():
 		message.text = game.workshop.expedition_action(region, room.target())
 	_refresh()
@@ -142,6 +180,11 @@ func _refresh() -> void:
 		if region == "swamp":
 			extra = "  ·  배수기 가동 / 저수위" if room.progress.has("swamp_open") else "  ·  고수위"
 		status.text = str(info.title) + extra
+		room.objective = ""
+		for goal: Dictionary in game.workshop.expedition_goals():
+			if goal.region == region:
+				room.objective = goal.site
+				break
 		action.text = "조사" if target.is_empty() else info.sites[target][1]
 		action.disabled = target.is_empty()
 	else:

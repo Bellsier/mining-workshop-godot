@@ -28,6 +28,7 @@ func enter_expedition(region: String) -> void:
 	if _transitioning or workshop.input_frozen() or not is_instance_valid(workshop.player):
 		return
 	workshop._record_position()
+	workshop.flush(true)
 	workshop.player = null
 	_context = ""
 	_context_action = ""
@@ -37,7 +38,15 @@ func enter_expedition(region: String) -> void:
 	go(EXPEDITION, "Start")
 
 
+func open_expedition_notebook() -> void:
+	if expedition_region.is_empty() or workshop.input_frozen():
+		return
+	_hud.show()
+	_hud.open_expedition_notebook()
+
+
 func leave_expedition() -> void:
+	workshop.flush(true)
 	_restoring_position = true
 	go(SURFACE, "Start")
 
@@ -54,6 +63,7 @@ func _ready() -> void:
 			_hud.name = "WorkshopHUD"
 			add_child(_hud)
 			_hud.setup(workshop)
+			_hud.closed.connect(_on_hud_closed)
 	if OS.has_feature("web"):
 		_web_window = JavaScriptBridge.get_interface("window")
 		if is_instance_valid(workshop):
@@ -163,6 +173,11 @@ func _interact() -> void:
 		_world.mine_near_vein()
 	else:
 		workshop.mine(_context)
+
+func _on_hud_closed() -> void:
+	if not expedition_region.is_empty():
+		_hud.hide()
+
 
 func workshop_is_open() -> bool:
 	return _hud != null and _hud.is_workshop_open()

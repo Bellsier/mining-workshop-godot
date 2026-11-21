@@ -2,8 +2,8 @@ extends Node2D
 
 const Regions := preload("res://scripts/expedition/regions.gd")
 const PLAYER := preload("res://art/player.png")
-const CELL := 26.0
-const ORIGIN := Vector2(71, 35)
+const CELL := 25.0
+const ORIGIN := Vector2(78, 30)
 const ACCENT := Color("#f6cd90")
 const LIGHT := Color("#bceee7")
 
@@ -11,6 +11,7 @@ var region: String
 var pos := Vector2i(1, 3)
 var progress: Dictionary
 var facing := 0
+var objective := ""
 
 func step(dir: Vector2i) -> bool:
 	if Regions.can_walk(region, pos + dir, progress):
@@ -61,8 +62,14 @@ func _draw() -> void:
 		draw_rect(Rect2(at - Vector2(9, 8), Vector2(18, 15)), stone.lightened(0.26) if active else stone.darkened(0.64))
 		draw_circle(at - Vector2(0, 2), 4.0, LIGHT if active else ACCENT)
 		draw_line(at + Vector2(-7, 6), at + Vector2(7, 6), stone.lightened(0.4))
+		if id == objective:
+			draw_arc(at - Vector2(0, 2), 11, 0.0, TAU, 16, ACCENT, 1.0)
 	if region == "village":
 		_draw_residents()
+	elif region == "crystal" and progress.has("alive"):
+		var at := _at(Vector2i(10, 2) if not progress.has("rescued") else Vector2i(8, 3))
+		draw_rect(Rect2(at + Vector2(-4, -6), Vector2(8, 13)), Color("#dce1e0"))
+		draw_circle(at - Vector2(0, 7), 3.5, Color("#e7c9ac"))
 	var p := _at(pos)
 	if region == "swamp" and not progress.has("swamp_open"):
 		_draw_fog(p)
