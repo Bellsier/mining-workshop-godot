@@ -102,7 +102,10 @@ static func surface_points(story: Dictionary, progress: Dictionary) -> Array[Vec
 	var points: Array[Vector2] = []
 	for item: Dictionary in goals(true, false, story, progress):
 		if not Regions.allowed(item.region, story, progress):
-			var landmark: String = "pump" if item.id == "repair" else item.id
+			var landmark: String = item.id
+			match landmark:
+				"repair": landmark = "pump"
+				"seal": landmark = Story.SEQUENCE[int(story.get("sequence", 0))]
 			if Story.SITES.has(landmark):
 				points.append(Story.SITES[landmark].at)
 			continue

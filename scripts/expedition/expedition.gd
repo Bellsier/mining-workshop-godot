@@ -95,6 +95,11 @@ func _begin_direction(id: String) -> void:
 	_command(id)
 
 
+func _notification(what: int) -> void:
+	if what in [NOTIFICATION_WM_WINDOW_FOCUS_OUT, NOTIFICATION_APPLICATION_FOCUS_OUT]:
+		direction_held = ""
+
+
 func _end_direction(id: String) -> void:
 	if direction_held == id:
 		direction_held = ""

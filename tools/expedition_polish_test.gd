@@ -18,6 +18,8 @@ func _run() -> void:
 	check(_goal(w, "tunnel").is_empty(), "opened tunnel objective disappears")
 	check(_goal(w, "forest").id == "tracks" and _goal(w, "swamp").id == "pump", "both directions are available")
 	check(_goal(w, "crystal").is_empty(), "crystal is not advertised before it is accessible")
+	var marked: Array = w.Guidance.surface_points({"tracks": true, "ledger": true, "sequence": 1}, {})
+	check(marked.has(World.Story.SITES.wave.at) and not marked.has(World.Story.SITES.leaf.at), "map marks the next surface puzzle plate")
 	for id in ["tracks", "ledger", "leaf", "wave", "leaf", "last"]:
 		w.investigate_landmark(id)
 	check(_goal(w, "forest").id == "marks", "forest entry follows the last surface clue")
