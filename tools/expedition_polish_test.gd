@@ -14,7 +14,15 @@ func _run() -> void:
 		quit(1)
 		return
 	check(_goal(w, "tunnel").id == "open_tunnel", "old game has a tunnel objective")
+	change_scene_to_file("res://scenes/world/world_map.tscn")
+	await process_frame
+	await process_frame
+	var minimap = current_scene.get_node("World/WorldUI/Minimap")
+	check(minimap._goal_points.is_empty(), "closed tunnel draws no unavailable regional markers")
 	w.world.unlock_tunnel()
+	await process_frame
+	await process_frame
+	check(not minimap._goal_points.is_empty(), "same minimap refreshes after the tunnel opens")
 	check(_goal(w, "tunnel").is_empty(), "opened tunnel objective disappears")
 	check(_goal(w, "forest").id == "tracks" and _goal(w, "swamp").id == "pump", "both directions are available")
 	check(_goal(w, "crystal").is_empty(), "crystal is not advertised before it is accessible")

@@ -53,7 +53,10 @@ func _process(_delta: float) -> void:
 	var signature: int = hash([world.tunnel_unlocked, world.story, world.expedition])
 	if signature != _last_goal_hash:
 		_last_goal_hash = signature
-		_goal_points = Guidance.surface_points(world.story, world.expedition) if world.tunnel_unlocked else []
+		if world.tunnel_unlocked:
+			_goal_points = Guidance.surface_points(world.story, world.expedition)
+		else:
+			_goal_points.clear()
 	queue_redraw()
 
 
