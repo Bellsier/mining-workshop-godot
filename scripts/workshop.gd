@@ -553,6 +553,16 @@ func _record_world(background := false) -> void:
 		_mark_dirty(false, background)
 	state.tunnel_open = world.tunnel_unlocked
 
+func investigate_landmark(id: String) -> String:
+	if not world.tunnel_unlocked or input_frozen():
+		return ""
+	var before: Dictionary = world.story.duplicate()
+	var result: String = World.Story.investigate(world.story, id)
+	if before != world.story:
+		_record_world()
+		changed.emit()
+	return result
+
 # --- world veins (web factory.js secureMine / mineMine, interact.js) --------------------------------------
 
 ## What pressing E at a vein does: "secure" (unsecured, its area open), "mine" (secured), "locked" (its area
@@ -874,7 +884,7 @@ func snapshot() -> Dictionary:
 	for row: Dictionary in data.sites:
 		sites.append({"id": row.key, "name": row.name, "cost": {"gold": row.unlockCost, "products": row.unlockProducts},
 			"unlocked": state.unlocked_sites.get(row.key, false)})
-	return {"gold": state.gold, "inventory": state.inventory, "resources": resources, "recipes": recipes,
+	return {"story_journal": World.Story.journal(world.story), "gold": state.gold, "inventory": state.inventory, "resources": resources, "recipes": recipes,
 		"workers": [{"id": "ticket", "name": "인부 뽑기 (가챠권)", "cost": 0, "tickets": state.tickets},
 			{"id": "gold", "name": "인부 뽑기 (골드)", "cost": data.balance.gacha.PULL_COST_GOLD}],
 		"owned_workers": assigned, "worker_details": workers, "tickets": state.tickets, "research": research,

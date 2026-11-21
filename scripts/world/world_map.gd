@@ -46,6 +46,7 @@ var _target: Dictionary = {}
 var objects: Node2D
 ## The scenery as last drawn (the sway layer draws its trees and grass from it every frame).
 var scenery_now: Array = []
+var landmarks: Node2D
 var floats: Node2D
 
 func _ready() -> void:
@@ -79,6 +80,9 @@ func _ready() -> void:
 	add_child(objects)
 	objects.setup(_economy(), state, player)
 	sway.setup(self, objects.light)
+	landmarks = preload("res://scripts/world/story_landmarks.gd").new()
+	landmarks.world = state
+	add_child(landmarks)
 	floats = WorldFloats.new()
 	floats.name = "Floats"
 	add_child(floats)
@@ -220,6 +224,13 @@ func _physics_process(delta: float) -> void:
 	state.explore(at)
 	var place: Dictionary = state.place_at(at)
 	var text: String = place.label
+	if state.tunnel_unlocked and place.region == "beyond":
+		if at.y >= -5.25 and at.y < 0.0:
+			text += " · 이끼숲"
+		elif at.y > 2.0 and at.y <= 7.0:
+			text += " · 안개 늪지"
+		elif at.y >= 0.0 and at.y <= 2.0:
+			text = "산 너머 · 북쪽 이끼숲 / 남쪽 늪지"
 	text += "  ·  광맥 %d/%d" % [state.discovered_count(), state.mines.size()]
 	if not _target.is_empty():
 		# as on the action button: a long label's cost is shown once, on the line above the button
@@ -358,6 +369,14 @@ func find_target(at: Vector2, facing: String) -> Dictionary:
 		if d <= INTERACT_RANGE and score < found.d:
 			found.t = t
 			found.d = score
+	if state.tunnel_unlocked and WorldTerrain.region_at(at.x, at.y) == "beyond":
+		for id: String in WorldState.Story.SITES:
+			var site: Dictionary = WorldState.Story.SITES[id]
+			var pos: Vector2 = site.at
+			var d := at.distance_to(pos)
+			if d <= INTERACT_RANGE:
+				var label := WorldState.Story.action_label(id, state.story)
+				consider.call({"type": "story", "id": id, "x": pos.x, "y": pos.y, "label": label}, d, 0.0)
 	for m: Dictionary in state.mines:
 		if not state.is_discovered(m):
 			continue
@@ -477,6 +496,9 @@ func interact(id: String) -> String:
 	var t := _target
 	var feet := to_units(player.position) if is_instance_valid(player) else Vector2(t.x, t.y)
 	match str(t.type):
+		"story":
+			show_toast(economy.investigate_landmark(str(t.id)))
+			landmarks.queue_redraw()
 		"mine":
 			match str(t.action):
 				"secure":
@@ -588,6 +610,7 @@ func garden_key(take: bool) -> void:
 
 
 func _on_tunnel_opened(_added: Array) -> void:
+	landmarks.queue_redraw()
 	_refresh_terrain.call_deferred()
 
 func _refresh_terrain() -> void:
