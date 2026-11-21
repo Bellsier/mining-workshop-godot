@@ -11,6 +11,7 @@ extends Node2D
 const WorldData := preload("res://scripts/world/world_data.gd")
 const WorldTerrain := preload("res://scripts/world/world_terrain.gd")
 const WorldState := preload("res://scripts/world/world_state.gd")
+const Expeditions := WorldState.Expeditions
 const WorldTiles := preload("res://scripts/world/world_tiles.gd")
 const PassageDoor := preload("res://scripts/world/world_passage_door.gd")
 const WorldObjects := preload("res://scripts/world/world_objects.gd")
@@ -377,6 +378,12 @@ func find_target(at: Vector2, facing: String) -> Dictionary:
 			if d <= INTERACT_RANGE:
 				var label := WorldState.Story.action_label(id, state.story)
 				consider.call({"type": "story", "id": id, "x": pos.x, "y": pos.y, "label": label}, d, 0.0)
+		for id: String in Expeditions.PORTALS:
+			if not Expeditions.allowed(id, state.story, state.expedition):
+				continue
+			var pos: Vector2 = Expeditions.PORTALS[id][0]
+			consider.call({"type": "expedition", "id": id, "x": pos.x, "y": pos.y, "label": Expeditions.PORTALS[id][1]},
+				at.distance_to(pos), 0.0)
 	for m: Dictionary in state.mines:
 		if not state.is_discovered(m):
 			continue
@@ -496,6 +503,8 @@ func interact(id: String) -> String:
 	var t := _target
 	var feet := to_units(player.position) if is_instance_valid(player) else Vector2(t.x, t.y)
 	match str(t.type):
+		"expedition":
+			get_node("/root/Game").enter_expedition(str(t.id))
 		"story":
 			show_toast(economy.investigate_landmark(str(t.id)))
 			landmarks.queue_redraw()

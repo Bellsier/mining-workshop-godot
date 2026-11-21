@@ -2,6 +2,10 @@ extends Node
 ## Autoload "Game": changes scenes and remembers where the player should appear.
 ## A door (Area2D with door.gd) calls go(scene, spawn); the next scene puts the player at the Marker2D named spawn.
 
+const SURFACE := "res://scenes/world/world_map.tscn"
+const EXPEDITION := "res://scenes/expedition/expedition.tscn"
+
+var expedition_region := ""
 var spawn_name := "Start"
 var _web_window = null
 var _trace_path := ""
@@ -20,6 +24,33 @@ func go(scene_path: String, spawn: String) -> void:
 	spawn_name = spawn
 	get_tree().call_deferred("change_scene_to_file", scene_path)
 
+func enter_expedition(region: String) -> void:
+	if _transitioning or workshop.input_frozen() or not is_instance_valid(workshop.player):
+		return
+	workshop._record_position()
+	workshop.flush(true)
+	workshop.player = null
+	_context = ""
+	_context_action = ""
+	_hud.close_workshop()
+	_hud.hide()
+	expedition_region = region
+	go(EXPEDITION, "Start")
+
+
+func open_expedition_notebook() -> void:
+	if expedition_region.is_empty() or workshop.input_frozen():
+		return
+	_hud.show()
+	_hud.open_expedition_notebook(expedition_region)
+
+
+func leave_expedition() -> void:
+	workshop.flush(true)
+	_restoring_position = true
+	go(SURFACE, "Start")
+
+
 func _ready() -> void:
 	if get_node_or_null("/root/Game") == self:
 		workshop = preload("res://scripts/workshop.gd").new()
@@ -32,6 +63,7 @@ func _ready() -> void:
 			_hud.name = "WorkshopHUD"
 			add_child(_hud)
 			_hud.setup(workshop)
+			_hud.closed.connect(_on_hud_closed)
 	if OS.has_feature("web"):
 		_web_window = JavaScriptBridge.get_interface("window")
 		if is_instance_valid(workshop):
@@ -54,6 +86,8 @@ func bind_level(level: Node2D, player: Node2D) -> void:
 	_transitioning = false
 	if _hud == null:
 		return
+	expedition_region = ""
+	_hud.show()
 	workshop.player = player
 	_world = null
 	_context = ""
@@ -105,7 +139,7 @@ var _context_action := ""
 var _garden_text := ""
 
 func _unhandled_key_input(event: InputEvent) -> void:
-	if not (event is InputEventKey and event.pressed and not event.echo) or workshop_is_open():
+	if not expedition_region.is_empty() or not (event is InputEventKey and event.pressed and not event.echo) or workshop_is_open():
 		return
 	match event.physical_keycode:
 		KEY_E, KEY_SPACE:
@@ -139,6 +173,11 @@ func _interact() -> void:
 		_world.mine_near_vein()
 	else:
 		workshop.mine(_context)
+
+func _on_hud_closed() -> void:
+	if not expedition_region.is_empty():
+		_hud.hide()
+
 
 func workshop_is_open() -> bool:
 	return _hud != null and _hud.is_workshop_open()

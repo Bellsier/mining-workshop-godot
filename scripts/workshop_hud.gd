@@ -1,6 +1,8 @@
 extends CanvasLayer
 ## Inventory is available anywhere. The world controller opens the full menu at the workshop.
 
+signal closed
+
 enum { TAB_INVENTORY, TAB_MINING, TAB_CRAFT, TAB_SELL, TAB_WORKERS, TAB_RESEARCH, TAB_DELIVERY, TAB_VILLAGE, TAB_SAVE }
 
 const ExactJson := preload("res://scripts/exact_json.gd")
@@ -31,6 +33,7 @@ var _context_hint: Label
 var _context_hint_text := ""
 var _overlay: ColorRect
 var _title: Label
+var _close_button: Button
 var _panel_gold: Label
 var _save_indicator: Label
 var _panel_save_indicator: Label
@@ -55,6 +58,7 @@ var _refresh_pending := false
 var _render_key := ""
 ## The tab the list was last drawn for: a redraw of the same tab keeps the player's place, a new tab starts at the top.
 var _rendered_tab := -1
+var _notebook_region := ""
 ## Where the pointer (mouse or finger) last was, in this layer's coordinates: the row under it is kept in place.
 var _pointer := Vector2(-INF, -INF)
 ## A press is held on the open menu: a redraw then only updates values in place, so the pressed control stays.
@@ -127,7 +131,7 @@ func _ready() -> void:
 
 ## Test aid for browser QA, like window.__trial_*: window.__trial_hud(command, argument) answers in
 ## window.__trial_hud_out (JSON). It only reports, except "open", which opens a tab of the menu.
-##   "controls": the menu's controls with an id, tabs and the close button: {id, kind, text, disabled, popup,
+##   "controls": the menu's rows with an id and its tabs: {id, kind, text, disabled, popup,
 ##               rect [x, y, w, h] in window pixels, and for a picker with its list open, list {rect, items}};
 ##   "view":     {scroll, max, rect} of the list, the note under it (the menu's last message) and the tab open;
 ##   "hud":      the world screen's own controls shown (action, bag, bar, torch, garden, hint card, save state);  "open": opens the tab named by the argument.
@@ -161,6 +165,13 @@ func _qa_hook(args: Array) -> void:
 				if _tab_buttons[i].is_visible_in_tree():
 					list.append({"id": "tab:" + TABS[i], "kind": "Button", "text": TABS[i], "disabled": false, "popup": false, "rect": rect_of.call(_tab_buttons[i])})
 			out = list
+		"close":
+			out = rect_of.call(_close_button) if _close_button.is_visible_in_tree() else null
+		"labels":
+			out = []
+			if visible and is_workshop_open():
+				for label: Label in _rows.find_children("*", "Label", true, false):
+					out.append(label.text)
 		"view":
 			out = {"scroll": _scroll.scroll_vertical, "max": _scroll.get_v_scroll_bar().max_value - _scroll.get_v_scroll_bar().page,
 				"rect": rect_of.call(_scroll), "redraws": redraw_stats, "note": _panel_note.text, "tab": _active_tab if is_workshop_open() else -1}
@@ -178,6 +189,12 @@ func open_workshop() -> void:
 
 func open_inventory() -> void:
 	_open(true)
+
+func open_expedition_notebook(region: String) -> void:
+	_notebook_region = region
+	_open(true)
+	if not is_workshop_open():
+		_notebook_region = ""
 
 ## Opens the workshop menu on a tab by name: "craft" (huts and recipes), "village", "mining", ...
 func open_tab(tab: String) -> void:
@@ -210,6 +227,8 @@ func close_workshop() -> void:
 	_garden.visible = not _garden.text.is_empty()
 	_context_hint.visible = not _context_hint_text.is_empty()
 	_place_action_detail()
+	_notebook_region = ""
+	closed.emit()
 
 func is_workshop_open() -> bool:
 	return is_instance_valid(_overlay) and _overlay.visible
@@ -267,7 +286,7 @@ func set_context_hint(message: String) -> void:
 		_context_hint.visible = not message.is_empty() and not is_workshop_open()
 
 func _unhandled_key_input(event: InputEvent) -> void:
-	if not is_instance_valid(_workshop) or _workshop.input_frozen():
+	if not visible or not is_instance_valid(_workshop) or _workshop.input_frozen():
 		return
 	var key := event as InputEventKey
 	if key == null or not key.pressed or key.echo:
@@ -466,10 +485,10 @@ func _build_overlay(surface: Control) -> void:
 	_panel_gold = _label("", 11)
 	_panel_gold.add_theme_color_override("font_color", Color("f1c577"))
 	header.add_child(_panel_gold)
-	var close_button := _button("닫기", close_workshop)
-	close_button.tooltip_text = "공방 메뉴 닫기 (Esc)"
-	close_button.custom_minimum_size.x = 44
-	header.add_child(close_button)
+	_close_button = _button("닫기", close_workshop)
+	_close_button.tooltip_text = "공방 메뉴 닫기 (Esc)"
+	_close_button.custom_minimum_size.x = 44
+	header.add_child(_close_button)
 	_tabs = HBoxContainer.new()
 	layout.add_child(_tabs)
 	var group := ButtonGroup.new()
@@ -590,12 +609,11 @@ func _refresh(force := false) -> void:
 			_names[output] = _names[id]
 	match _active_tab:
 		TAB_INVENTORY:
-			_render_inventory(inventory)
-			if state.get("tunnel", {}).get("open", false):
-				_rows.add_child(_label("탐사 수첩", 12))
-				_add_row("터널 너머 갈림길", "북쪽은 이끼숲, 남쪽은 안개 늪지. 어느 길이든 가까운 표식을 조사하면 이곳에 기록된다.")
-				for note: Dictionary in state.get("story_journal", []):
-					_add_row(note.title, note.text)
+			if _notebook_region.is_empty():
+				_render_inventory(inventory)
+			_render_expedition_notebook(state)
+			if not _notebook_region.is_empty():
+				_render_inventory(inventory)
 			if not _log.is_empty():
 				_rows.add_child(_label("기록", 12))
 				for line in _log:
@@ -936,7 +954,8 @@ func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: 
 	var automation: Dictionary = state.get("automation", {})
 	var completed: Dictionary = state.get("completed_research", {})
 	match _active_tab:
-		TAB_INVENTORY: return JSON.stringify([shown_quantities, state.get("tunnel", {}).get("open", false), state.get("story_journal", []), _log.size(), _log.front() if not _log.is_empty() else ""])
+		TAB_INVENTORY: return JSON.stringify([shown_quantities, state.get("expedition_goals", []),
+			state.get("expedition_stamps", []), state.get("story_journal", []), _log.size(), _log.front() if not _log.is_empty() else ""])
 		TAB_MINING: return JSON.stringify([state.get("mining", {}), state.get("hint", ""), floorf(gold)])
 		TAB_CRAFT:
 			var remaining := []
@@ -952,6 +971,27 @@ func _panel_key(state: Dictionary, inventory: Dictionary, recipes: Array, gold: 
 		TAB_RESEARCH: return JSON.stringify([state.get("tunnel", {}), visible_quantities, completed, floorf(gold)])
 		TAB_VILLAGE: return JSON.stringify([visible_quantities, state.get("village", {}), state.get("garden", {}), floorf(gold)])
 	return str(_active_tab)
+
+func _render_expedition_notebook(state: Dictionary) -> void:
+	var goals: Array = state.get("expedition_goals", [])
+	var notes: Array = state.get("story_journal", [])
+	if goals.is_empty() and notes.is_empty():
+		return
+	_rows.add_child(_label("탐사 수첩", 12))
+	if not goals.is_empty():
+		_rows.add_child(_label("다음 목표", 10))
+		for goal: Dictionary in goals:
+			if goal.region == _notebook_region:
+				_add_row(goal.title, goal.local if not goal.local.is_empty() else goal.text)
+		for goal: Dictionary in goals:
+			if goal.region != _notebook_region:
+				_add_row(goal.title, goal.text)
+	var stamps: Array = state.get("expedition_stamps", [])
+	if not stamps.is_empty():
+		_add_row("탐사 인장 · %d/5" % stamps.size(), "  ·  ".join(PackedStringArray(stamps)))
+	for note: Dictionary in notes:
+		_add_row(note.title, note.text)
+
 
 func _render_inventory(inventory: Dictionary) -> void:
 	for key in inventory:

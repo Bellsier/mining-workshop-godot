@@ -4,7 +4,7 @@ on:
   push:
     branches: [codex/godot-migration, claude/feature-parity-p0, claude/modest-mendel-yvz6iv]
   pull_request:
-    branches: [main, codex/godot-world-integration]
+    branches: [main, codex/godot-world-integration, codex/moss-marsh-stories]
 
 permissions:
   contents: read
@@ -64,6 +64,15 @@ jobs:
           else
             node run.cjs
           fi
+      - name: Repeat WebKit start and reload
+        if: ${{ !cancelled() && matrix.browser == 'webkit' }}
+        working-directory: tests/web-save
+        env:
+          SAVE_QA_BROWSER: webkit
+          SAVE_QA_WEB: ${{ runner.temp }}/save-qa-web
+          SAVE_QA_OUTPUT: ${{ runner.temp }}/save-qa-results/webkit-startup
+          SAVE_QA_REPEAT: '12'
+        run: node run.cjs
       - name: Workshop menu in Chromium (desktop 960x540 and phone 568x320, mouse, keyboard and touch)
         if: ${{ !cancelled() && matrix.browser == 'chromium' }}
         working-directory: tests/web-save
@@ -76,7 +85,10 @@ jobs:
         working-directory: tests/web-save
         env:
           SAVE_QA_WEB: ${{ runner.temp }}/save-qa-web
-        run: node region-story.cjs
+          SAVE_QA_OUTPUT: ${{ runner.temp }}/save-qa-results
+        run: |
+          node region-story.cjs
+          node expedition.cjs
       - name: Keep browser save evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -125,6 +137,15 @@ jobs:
           XDG_DATA_HOME="$RUNNER_TEMP/region-story" godot --headless --fixed-fps 60 --script res://tools/region_story_test.gd 2>&1 | tee "$RUNNER_TEMP/region-story.log"
           grep -Fx 'REGION STORY PASS' "$RUNNER_TEMP/region-story.log"
           ! grep -E 'SCRIPT ERROR:|^ERROR:' "$RUNNER_TEMP/region-story.log"
+      - name: Verify expedition gates, temple checkpoint and surface return
+        run: |
+          set -o pipefail
+          XDG_DATA_HOME="$RUNNER_TEMP/expedition" godot --headless --fixed-fps 60 --script res://tools/expedition_test.gd 2>&1 | tee "$RUNNER_TEMP/expedition.log"
+          grep -Fx 'EXPEDITION PASS' "$RUNNER_TEMP/expedition.log"
+          ! grep -E 'SCRIPT ERROR:|^ERROR:' "$RUNNER_TEMP/expedition.log"
+          XDG_DATA_HOME="$RUNNER_TEMP/expedition-polish" godot --headless --script res://tools/expedition_polish_test.gd 2>&1 | tee "$RUNNER_TEMP/expedition-polish.log"
+          grep -Fx 'EXPEDITION POLISH PASS' "$RUNNER_TEMP/expedition-polish.log"
+          ! grep -E 'SCRIPT ERROR:|^ERROR:' "$RUNNER_TEMP/expedition-polish.log"
       - name: Verify tunnel construction conditions for visual QA
         shell: bash
         run: |
