@@ -77,8 +77,9 @@ function installFaults(options) {
     fault.puts++;
     // A write is picked by what it saves: 'iron:<n>' (the inventory's iron) or 'torches:<n>' (torches in the world).
     let marks = [];
+    let saved;
     try {
-      const saved = JSON.parse(value.text).state;
+      saved = JSON.parse(value.text).state;
       marks = ['iron:' + saved.inventory.iron, 'torches:' + ((saved.world && saved.world.torches) || []).length];
     } catch { marks = []; }
     const quantity = marks.find(mark => fault.targets.includes(mark));
@@ -93,7 +94,8 @@ function installFaults(options) {
     tx.addEventListener('abort', () => fault.aborted++);
     tx.addEventListener('complete', () => {
       fault.committed++;
-      fault.commits.push({ mark: quantity, status: String(window.__trial_save_status) });
+      fault.commits.push({ mark: quantity, status: String(window.__trial_save_status),
+        orderTimer: saved?.delivery?.companies?.forge?.orderTimer, tradeTimer: saved?.delivery?.companies?.forge?.tradeTimer });
     });
     if (fault.fail > 0) {
       fault.fail--;
@@ -517,15 +519,18 @@ async function s2Import({ page, baseline, note, shot }) {
   note({ failedImportPreserved: true, s2ImportedAfterCommit: true, replacedSaveBackedUp: true });
 }
 
-// A JS/S2 save file chosen in the browser's file picker keeps its exact bytes (CRLF, Korean, emoji).
-async function fileImport({ page, note, shot }) {
-  const fixture = await fs.readFile(path.join(__dirname, '..', 'fixtures', 'js_save_s2_crlf_utf8.json'));
-  const expected = sha256(fixture);
-  assert.ok(fixture.includes(Buffer.from('\r\n')) && fixture.toString('utf8').includes('😀'), 'fixture has CRLF and emoji');
-  await page.keyboard.press('i');
-  await delay(250);
-  await page.mouse.click(700, 118);
-  await delay(400);
+const saveMenu = page => page.evaluate(() => {
+  window.__trial_hud('view');
+  return JSON.parse(window.__trial_hud_out);
+});
+
+async function chooseSaveFile(page, note, shot) {
+  if ((await saveMenu(page)).tab !== 8) {
+    await page.keyboard.press('i');
+    await delay(250);
+    await page.mouse.click(700, 118);
+    await delay(400);
+  }
   await shot('save-tab');
   // The file button sits on the row below the paste controls; its exact height depends on font metrics.
   let chooser = null;
@@ -535,14 +540,44 @@ async function fileImport({ page, note, shot }) {
     chooser = await opened;
     if (chooser) { note({ fileButtonAt: [70, y] }); break; }
   }
-  if (!chooser) assert.fail('The file import button did not open the browser file picker');
-  await chooser.setFiles({ name: 'js-save.json', mimeType: 'application/json', buffer: fixture });
-  const deadline = Date.now() + 20000;
-  let record;
-  while ((record = await store.read(page))?.state?.legacy_web_save_sha256 !== expected) {
-    assert.ok(Date.now() < deadline, 'the file import was saved');
-    await delay(250);
+  assert.ok(chooser, 'the file import button opens the browser file picker');
+  return chooser;
+}
+
+async function importFile(page, fixture, note, shot) {
+  const expected = sha256(fixture);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const chooser = await chooseSaveFile(page, note, shot);
+    await waitSaved(page);
+    await chooser.setFiles({ name: 'js-save.json', mimeType: 'application/json', buffer: fixture });
+    const deadline = Date.now() + 20000;
+    let busy = false;
+    await delay(350);
+    while (Date.now() < deadline) {
+      const record = await store.read(page);
+      if (record?.state?.legacy_web_save_sha256 === expected) {
+        assert.deepEqual(keptBytes(record.state), fixture);
+        return record;
+      }
+      // The file callback can meet a scheduled autosave. Retry only if it explicitly refused the import.
+      if ((await saveMenu(page)).note.includes('지금 저장하는 중이라')) {
+        note({ retryAfterBusy: attempt + 1 });
+        busy = true;
+        break;
+      }
+      await delay(250);
+    }
+    assert.ok(busy, 'the selected file reaches the committed save');
   }
+  assert.fail('the file import stayed busy after three attempts');
+}
+
+// A JS/S2 save file chosen in the browser's file picker keeps its exact bytes (CRLF, Korean, emoji).
+async function fileImport({ page, note, shot }) {
+  const fixture = await fs.readFile(path.join(__dirname, '..', 'fixtures', 'js_save_s2_crlf_utf8.json'));
+  const expected = sha256(fixture);
+  assert.ok(fixture.includes(Buffer.from('\r\n')) && fixture.toString('utf8').includes('😀'), 'fixture has CRLF and emoji');
+  const record = await importFile(page, fixture, note, shot);
   await waitSaved(page);
   await shot('file-imported');
   assert.equal(sha256(keptBytes(record.state)), expected, 'stored bytes equal the file');
@@ -554,6 +589,97 @@ async function fileImport({ page, note, shot }) {
   const reloaded = (await store.read(page)).state;
   assert.equal(sha256(keptBytes(reloaded)), expected, 'stored bytes equal the file after a reload');
   note({ fileImportSha256: expected, bytes: fixture.length, keptAfterReload: true });
+}
+
+async function parityFixture() {
+  return JSON.parse(await fs.readFile(path.join(__dirname, '..', 'fixtures', 'js_save_v1_full_world.json'), 'utf8'));
+}
+
+const fileBytes = payload => Buffer.from(JSON.stringify(payload) + '\r\n');
+
+async function importedProgress({ page, note, shot }) {
+  const mid = await parityFixture();
+  const start = mid.run.products.crystalAlloy;
+  mid.run.craftQueue.crystalAlloy = 0;
+  delete mid.run.world.mines;
+  delete mid.run.world.hiddenMineIds;
+  delete mid.run.autoSellOn;
+  mid.run.world.tunnelContract = null;
+  const raw = fileBytes(mid);
+  const imported = await importFile(page, raw, note, shot);
+  const deadline = Date.now() + 12000;
+  let completed = imported;
+  while (completed.state.inventory.crystalAlloy === start) {
+    assert.ok(Date.now() < deadline, 'zero-second paid craft reaches the committed save');
+    await delay(250);
+    completed = await store.read(page);
+  }
+  assert.equal(completed.state.inventory.crystalAlloy, start + 1);
+  assert.equal(completed.state.inventory.coalBrick, 0);
+  assert.equal(completed.state.gold, 154491.096); // original JS tickAutoSell using this fixture
+  assert.equal(completed.state.world.base.level, 3);
+  assert.deepEqual(completed.state.world.mines, []);
+  assert.equal(completed.state.world.workshops.length, mid.run.world.workshops.length);
+  assert.equal(completed.state.world.torches.length, mid.run.world.torches.length);
+  await page.reload();
+  await waitSaved(page);
+  const reloaded = await store.read(page);
+  assert.equal(reloaded.state.inventory.crystalAlloy, start + 1);
+  assert.equal(reloaded.state.world.base.level, 3);
+  assert.deepEqual(keptBytes(reloaded.state), raw);
+  const late = await parityFixture();
+  late.run.world.tunnelUnlocked = true;
+  late.run.world.tunnelContract = null;
+  late.run.products.plasmaCore = 17.5;
+  late.permanent.tickets = 6;
+  const lateRaw = fileBytes(late);
+  const lateRecord = await importFile(page, lateRaw, note, shot);
+  assert.equal(lateRecord.state.tickets, 6);
+  assert.equal(lateRecord.state.inventory.plasmaCore, 17.5);
+  assert.equal(lateRecord.state.world.tunnelUnlocked, true);
+  const backup = JSON.parse((await store.raw(page, 'get', 'slot:main:before-import')).text).state;
+  assert.equal(backup.inventory.crystalAlloy, start + 1);
+  assert.equal(backup.world.base.level, 3);
+  assert.deepEqual(keptBytes(backup), raw);
+  await page.reload();
+  await waitSaved(page);
+  assert.deepEqual(keptBytes((await store.read(page)).state), lateRaw);
+  note({ craftCompletedOnce: true, starterBaseLevelPreserved: 3, autoSellMatchesJs: true, lateImportAndPriorBytes: true });
+}
+
+async function idleDeliveryTimers({ page, note, shot }) {
+  const input = await parityFixture();
+  input.run.characters = [];
+  input.run.workforce = {};
+  input.run.autoCraft = {};
+  input.run.autoSell = {};
+  input.run.products = {};
+  input.run.world.mines.forEach(mine => { mine.developmentState = 'unsecured'; });
+  input.run.world.workshops = [];
+  input.run.world.tunnelContract = null;
+  const forge = input.permanent.companies.forge;
+  Object.assign(forge, { score: 500, orderTimer: 30, tradeTimer: 10, open: forge.open.slice(0, 1) });
+  const bytes = fileBytes(input);
+  await importFile(page, bytes, note, shot);
+  const mark = 'iron:' + input.run.resources.iron;
+  await inject(page, { targets: [mark], delays: { [mark]: 3500 } });
+  await page.waitForFunction(() => qaWrites.attempted >= 1, undefined, { timeout: 20000 });
+  await delay(700);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.waitForFunction(() => qaWrites.commits.length >= 2, undefined, { timeout: 20000 });
+  const [first, second] = await page.evaluate(() => qaWrites.commits);
+  assert.ok(first.orderTimer > 30 && first.tradeTimer > 10, 'timer-only change autosaves');
+  assert.ok(second.orderTimer > first.orderTimer && second.tradeTimer > first.tradeTimer, 'changes while saving are committed afterward');
+  await page.reload();
+  await waitSaved(page);
+  const resumed = (await store.read(page)).state;
+  assert.ok(resumed.delivery.companies.forge.orderTimer >= second.orderTimer);
+  assert.ok(resumed.delivery.companies.forge.tradeTimer >= second.tradeTimer);
+  assert.deepEqual(keptBytes(resumed), bytes);
+  note({ timerOnlyAutosave: first, committedAfterPageHide: second });
 }
 
 async function main() {
@@ -587,6 +713,10 @@ async function main() {
       await runCase(browser, origin, ['folder-key-migration', folderKeyMigration], false, false);
       await runCase(browser, origin, ['s2-import', s2Import]);
       await runCase(browser, origin, ['file-import', fileImport]);
+      if (engine === 'chromium') {
+        await runCase(browser, origin, ['imported-progress', importedProgress]);
+        await runCase(browser, origin, ['idle-delivery-timers', idleDeliveryTimers]);
+      }
       await runCase(browser, origin, ['timeout-recovery', timeoutRecovery]);
       await runCase(browser, origin, ['basic-durability', unverifiedDurability]);
       await runCase(browser, origin, ['quota-refusal', quotaRefusal]);
