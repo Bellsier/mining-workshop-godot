@@ -1974,7 +1974,7 @@ func _valid_save_state(imported: Dictionary) -> bool:
 		return false
 	if not (imported.get("gold") is int or imported.get("gold") is float) or float(imported.gold) < 0.0:
 		return false
-	for key in ["inventory", "completed_research", "unlocked_sites", "automation", "queue", "facility", "workforce", "stats", "position", "legacy_web_save", "delivery", "last_pull"]:
+	for key in ["inventory", "completed_research", "unlocked_sites", "automation", "facility", "workforce", "stats", "position", "legacy_web_save", "delivery", "last_pull"]:
 		if imported.has(key) and not imported[key] is Dictionary:
 			return false
 	if not imported.get("inventory") is Dictionary:

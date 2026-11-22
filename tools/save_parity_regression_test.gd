@@ -81,6 +81,7 @@ func _test_queue() -> void:
 		{"queue": {PRODUCT: -1}},
 		{"queue": {PRODUCT: null}},
 		{"queue": {PRODUCT: "2"}},
+		{"queue": null},
 		{"queue": {"unknownRecipe": 0}},
 		{},
 	]:
@@ -250,7 +251,6 @@ func _test_envelopes() -> void:
 	old_godot["legacy_web_save"] = archived.snapshot.payload
 	check(game.import_save(Save.export_game(old_godot)) and game.legacy_original_bytes() == old_bytes,
 		"old native saves keep previously accepted S2 original bytes")
-	good = Save.read_raw()
 	var malformed := [
 		{"snapshot": snapshot, "revision": 0},
 		{"format": 2, "payload": payload},
@@ -259,8 +259,10 @@ func _test_envelopes() -> void:
 		{"saveVersion": 2, "run": payload.run},
 	]
 	for invalid in malformed:
-		check(not game.import_save(Exact.stringify(invalid)) and Save.read_raw() == good,
-			"invalid envelope does not replace active storage")
+		var before := Save.read_raw()
+		check(not game.import_save(Exact.stringify(invalid)) and Save.read_raw() == before,
+			"invalid envelope does not replace active storage: %s" % [invalid.keys()])
 	for text in ['{"saveVersion": 1, "run":{"gold": 1e999}}', '{"saveVersion": 1, "run": {']:
-		check(not game.import_save(text) and Save.read_raw() == good, "invalid number or JSON protects disk")
+		var before := Save.read_raw()
+		check(not game.import_save(text) and Save.read_raw() == before, "invalid number or JSON protects disk")
 	game.free()
