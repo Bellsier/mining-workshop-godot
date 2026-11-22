@@ -122,61 +122,33 @@ jobs:
       - name: Import assets and check scripts
         shell: bash
         run: |
-          godot --headless --path . --editor --import 2>&1 | tee "$QA_LOG_DIR/import.log"
-          if grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$QA_LOG_DIR/import.log"; then exit 1; fi
+          tools/run_godot_qa.sh 120 "$QA_LOG_DIR/import.log" '-' godot --headless --path . --editor --import
       - name: Verify gameplay, save conversion and walking route
         shell: bash
         run: |
-          godot --headless --path . --script res://tools/workshop_migration_test.gd 2>&1 | tee "$QA_LOG_DIR/gameplay.log"
-          grep -F 'WORKSHOP MIGRATION PASS' "$QA_LOG_DIR/gameplay.log"
-          godot --headless --path . --script res://tools/save_migration_test.gd 2>&1 | tee "$QA_LOG_DIR/save.log"
-          grep -F 'Save migration tests passed' "$QA_LOG_DIR/save.log"
-          mkdir -p "$RUNNER_TEMP/save-recovery"
-          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/save-recovery" godot --headless --path . --script res://tools/save_recovery_test.gd 2>&1 | tee "$QA_LOG_DIR/recovery.log"
-          grep -F 'SAVE RECOVERY PASS' "$QA_LOG_DIR/recovery.log"
-          godot --headless --path . --fixed-fps 60 -- --route-test 2>&1 | tee "$QA_LOG_DIR/route.log"
-          grep -F 'ROUTE PASS' "$QA_LOG_DIR/route.log"
-          if grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$QA_LOG_DIR/"{gameplay,save,route}.log; then exit 1; fi
-          # The recovery test provokes failed writes on purpose; only script errors fail it here.
-          if grep -E 'SCRIPT ERROR:|Parse Error:' "$QA_LOG_DIR/recovery.log"; then exit 1; fi
+          tools/run_godot_qa.sh 90 "$QA_LOG_DIR/gameplay.log" 'WORKSHOP MIGRATION PASS' godot --headless --path . --script res://tools/workshop_migration_test.gd
+          tools/run_godot_qa.sh 90 "$QA_LOG_DIR/save.log" 'Save migration tests passed' godot --headless --path . --script res://tools/save_migration_test.gd
+          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/recovery.log" 'SAVE RECOVERY PASS' godot --headless --path . --script res://tools/save_recovery_test.gd
+          tools/run_godot_qa.sh 90 "$QA_LOG_DIR/route.log" 'ROUTE PASS' godot --headless --path . --fixed-fps 60 -- --route-test
       - name: Verify regional investigations, puzzle order and save compatibility
         run: |
-          set -o pipefail
-          XDG_DATA_HOME="$RUNNER_TEMP/region-story" godot --headless --fixed-fps 60 --script res://tools/region_story_test.gd 2>&1 | tee "$QA_LOG_DIR/region-story.log"
-          grep -Fx 'REGION STORY PASS' "$QA_LOG_DIR/region-story.log"
-          if grep -E 'SCRIPT ERROR:|^ERROR:' "$QA_LOG_DIR/region-story.log"; then exit 1; fi
+          XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/region-story.log" 'REGION STORY PASS' godot --headless --path . --fixed-fps 60 --script res://tools/region_story_test.gd
       - name: Verify expedition gates, temple checkpoint and surface return
         run: |
-          set -o pipefail
-          XDG_DATA_HOME="$RUNNER_TEMP/expedition" godot --headless --fixed-fps 60 --script res://tools/expedition_test.gd 2>&1 | tee "$QA_LOG_DIR/expedition.log"
-          grep -Fx 'EXPEDITION PASS' "$QA_LOG_DIR/expedition.log"
-          if grep -E 'SCRIPT ERROR:|^ERROR:' "$QA_LOG_DIR/expedition.log"; then exit 1; fi
-          XDG_DATA_HOME="$RUNNER_TEMP/expedition-polish" godot --headless --script res://tools/expedition_polish_test.gd 2>&1 | tee "$QA_LOG_DIR/expedition-polish.log"
-          grep -Fx 'EXPEDITION POLISH PASS' "$QA_LOG_DIR/expedition-polish.log"
-          if grep -E 'SCRIPT ERROR:|^ERROR:' "$QA_LOG_DIR/expedition-polish.log"; then exit 1; fi
+          XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/expedition.log" 'EXPEDITION PASS' godot --headless --path . --fixed-fps 60 --script res://tools/expedition_test.gd
+          XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/expedition-polish.log" 'EXPEDITION POLISH PASS' godot --headless --path . --script res://tools/expedition_polish_test.gd
       - name: Verify tunnel construction conditions for visual QA
         shell: bash
         run: |
-          set -o pipefail
-          godot --headless --path . --script res://tools/world_integration_test.gd 2>&1 | tee "$QA_LOG_DIR/construction.log"
-          grep -F 'WORLD INTEGRATION PASS' "$QA_LOG_DIR/construction.log"
-          if grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$QA_LOG_DIR/construction.log"; then exit 1; fi
+          tools/run_godot_qa.sh 90 "$QA_LOG_DIR/construction.log" 'WORLD INTEGRATION PASS' godot --headless --path . --script res://tools/world_integration_test.gd
       - name: Verify imported save parity and exact original bytes
         run: |
-          for test in save_parity_regression_test save_integrity_test; do
-            MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" \
-              godot --headless --path . --script "res://tools/$test.gd" 2>&1 | tee "$QA_LOG_DIR/$test.log"
-            if grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$QA_LOG_DIR/$test.log"; then exit 1; fi
-          done
-          grep -Fx 'SAVE PARITY REGRESSION PASS' "$QA_LOG_DIR/save_parity_regression_test.log"
-          grep -Fx 'SAVE INTEGRITY PASS' "$QA_LOG_DIR/save_integrity_test.log"
-      - name: Keep headless migration logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: godot-headless-migration-logs
-          path: ${{ env.QA_LOG_DIR }}
-          retention-days: 30
+          while IFS='|' read -r test marker; do
+            MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/$test.log" "$marker" godot --headless --path . --fixed-fps 60 --script "res://tools/$test.gd" || exit $?
+          done <<'TESTS'
+          save_parity_regression_test|SAVE PARITY REGRESSION PASS
+          save_integrity_test|SAVE INTEGRITY PASS
+          TESTS
       - name: Build private Web preview
         shell: bash
         run: |
@@ -185,9 +157,16 @@ jobs:
           mkdir -p "$templates" "$RUNNER_TEMP/web"
           curl --fail --show-error --silent --location --retry 2 --output "$RUNNER_TEMP/templates.tpz" "$release/Godot_v4.4.1-stable_export_templates.tpz"
           unzip -j "$RUNNER_TEMP/templates.tpz" 'templates/web_nothreads_*.zip' -d "$templates"
-          godot --headless --path . --export-release Web "$RUNNER_TEMP/web/index.html"
+          tools/run_godot_qa.sh 120 "$QA_LOG_DIR/web-export.log" '-' godot --headless --path . --export-release Web "$RUNNER_TEMP/web/index.html"
           test -s "$RUNNER_TEMP/web/index.wasm"
           test -s "$RUNNER_TEMP/web/index.pck"
+      - name: Keep headless migration logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: godot-headless-migration-logs
+          path: ${{ env.QA_LOG_DIR }}
+          retention-days: 30
       - name: Keep Web preview with this run
         uses: actions/upload-artifact@v4
         with:

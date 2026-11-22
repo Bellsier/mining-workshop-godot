@@ -3,6 +3,9 @@ name: World migration QA
 on:
   push:
     branches: [main, 'claude/**', 'codex/godot-world-integration', 'codex/all-region-expeditions']
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/world-qa.yml', 'tools/run_godot_qa.sh']
   workflow_dispatch:
 
 permissions:
@@ -34,151 +37,105 @@ jobs:
       - name: Import assets and check scripts
         shell: bash
         run: |
-          godot --headless --path . --editor --import 2>&1 | tee "$QA_LOG_DIR/import.log"
-          if grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$QA_LOG_DIR/import.log"; then exit 1; fi
+          tools/run_godot_qa.sh 120 "$QA_LOG_DIR/import.log" '-' godot --headless --path . --editor --import
       - name: World logic matches the web original
         shell: bash
         run: |
-          godot --headless --path . --script res://tools/world_logic_test.gd 2>&1 | tee "$QA_LOG_DIR/world-logic.log"
-          grep -F 'WORLD LOGIC PASS' "$QA_LOG_DIR/world-logic.log"
+          tools/run_godot_qa.sh 90 "$QA_LOG_DIR/world-logic.log" 'WORLD LOGIC PASS \([0-9]+ checks\)' godot --headless --path . --script res://tools/world_logic_test.gd
       - name: Stage 1 workshop-tunnel route still passes
         shell: bash
         run: |
-          godot --headless --path . --fixed-fps 60 -- --route-test 2>&1 | tee "$QA_LOG_DIR/route.log"
-          grep -F 'ROUTE PASS' "$QA_LOG_DIR/route.log"
+          tools/run_godot_qa.sh 90 "$QA_LOG_DIR/route.log" 'ROUTE PASS' godot --headless --path . --fixed-fps 60 -- --route-test
       - name: World exploration route
         shell: bash
         run: |
-          godot --headless --path . --fixed-fps 60 --script res://tools/world_route_test.gd 2>&1 | tee "$QA_LOG_DIR/world-route.log"
-          grep -F 'WORLD ROUTE PASS' "$QA_LOG_DIR/world-route.log"
+          tools/run_godot_qa.sh 90 "$QA_LOG_DIR/world-route.log" 'WORLD ROUTE PASS' godot --headless --path . --fixed-fps 60 --script res://tools/world_route_test.gd
       - name: World persistence, construction, research and unified route
         shell: bash
         run: |
-          set -o pipefail
-          for test in save_migration_test workshop_migration_test world_integration_test unified_world_route_test world_scene_test; do
-            timeout 90 godot --headless --path . --fixed-fps 60 --script "res://tools/$test.gd" 2>&1 | tee "$QA_LOG_DIR/$test.log"
-          done
+          while IFS='|' read -r test marker; do
+            tools/run_godot_qa.sh 90 "$QA_LOG_DIR/$test.log" "$marker" godot --headless --path . --fixed-fps 60 --script "res://tools/$test.gd" || exit $?
+          done <<'TESTS'
+          save_migration_test|Save migration tests passed
+          workshop_migration_test|WORKSHOP MIGRATION PASS
+          world_integration_test|WORLD INTEGRATION PASS
+          unified_world_route_test|UNIFIED WORLD ROUTE PASS
+          world_scene_test|WORLD SCENE PASS
+          TESTS
       - name: Parity fixes (tickets, auto-sell, order timer, fractional stock, JS save kept)
         shell: bash
         run: |
-          set -o pipefail
-          mkdir -p "$RUNNER_TEMP/parity-fixes"
-          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/parity-fixes" godot --headless --path . --script res://tools/parity_fixes_test.gd 2>&1 | tee "$QA_LOG_DIR/parity-fixes.log"
-          grep -F 'PARITY FIXES PASS' "$QA_LOG_DIR/parity-fixes.log"
+          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/parity-fixes.log" 'PARITY FIXES PASS' godot --headless --path . --script res://tools/parity_fixes_test.gd
       - name: Save integrity (exact numbers, original bytes, damaged originals, abnormal numbers)
         shell: bash
         run: |
-          set -o pipefail
-          mkdir -p "$RUNNER_TEMP/save-integrity"
-          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/save-integrity" godot --headless --path . --script res://tools/save_integrity_test.gd 2>&1 | tee "$QA_LOG_DIR/save-integrity.log"
-          grep -F 'SAVE INTEGRITY PASS' "$QA_LOG_DIR/save-integrity.log"
+          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/save-integrity.log" 'SAVE INTEGRITY PASS' godot --headless --path . --script res://tools/save_integrity_test.gd
       - name: Verify save parity, recovery and expedition progression
         run: |
-          for test in save_parity_regression_test save_recovery_test region_story_test expedition_test expedition_polish_test; do
-            MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" \
-              timeout 120 godot --headless --path . --fixed-fps 60 --script "res://tools/$test.gd" 2>&1 | tee "$QA_LOG_DIR/$test.log"
-          done
-          grep -Fx 'SAVE PARITY REGRESSION PASS' "$QA_LOG_DIR/save_parity_regression_test.log"
-          grep -Fx 'SAVE RECOVERY PASS' "$QA_LOG_DIR/save_recovery_test.log"
-          grep -Fx 'REGION STORY PASS' "$QA_LOG_DIR/region_story_test.log"
-          grep -Fx 'EXPEDITION PASS' "$QA_LOG_DIR/expedition_test.log"
-          grep -Fx 'EXPEDITION POLISH PASS' "$QA_LOG_DIR/expedition_polish_test.log"
+          while IFS='|' read -r test marker; do
+            MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/$test.log" "$marker" godot --headless --path . --fixed-fps 60 --script "res://tools/$test.gd" || exit $?
+          done <<'TESTS'
+          save_parity_regression_test|SAVE PARITY REGRESSION PASS
+          save_recovery_test|SAVE RECOVERY PASS
+          region_story_test|REGION STORY PASS
+          expedition_test|EXPEDITION PASS
+          expedition_polish_test|EXPEDITION POLISH PASS
+          TESTS
       - name: Craft huts match the web original (build, recipes, crafting, saves, workshop-only recipes)
         shell: bash
         run: |
-          set -o pipefail
-          mkdir -p "$RUNNER_TEMP/craft-huts"
-          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/craft-huts" godot --headless --path . --script res://tools/craft_hut_test.gd 2>&1 | tee "$QA_LOG_DIR/craft-huts.log"
-          grep -F 'CRAFT HUT PASS' "$QA_LOG_DIR/craft-huts.log"
+          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/craft-huts.log" 'CRAFT HUT PASS' godot --headless --path . --script res://tools/craft_hut_test.gd
       - name: Economy matches the web original (tick income, crafting order, costs, expansion, veins)
         shell: bash
         run: |
-          set -o pipefail
-          godot --headless --path . --script res://tools/economy_parity_test.gd 2>&1 | tee "$QA_LOG_DIR/economy.log"
-          grep -F 'ECONOMY PARITY PASS' "$QA_LOG_DIR/economy.log"
+          tools/run_godot_qa.sh 90 "$QA_LOG_DIR/economy.log" 'ECONOMY PARITY PASS' godot --headless --path . --script res://tools/economy_parity_test.gd
       - name: Village layout matches the web original (sites, plaza, roads, garden, hut spots)
         shell: bash
         run: |
-          set -o pipefail
-          godot --headless --path . --script res://tools/village_layout_test.gd 2>&1 | tee "$QA_LOG_DIR/village-layout.log"
-          grep -F 'VILLAGE LAYOUT PASS' "$QA_LOG_DIR/village-layout.log"
+          tools/run_godot_qa.sh 90 "$QA_LOG_DIR/village-layout.log" 'VILLAGE LAYOUT PASS' godot --headless --path . --script res://tools/village_layout_test.gd
       - name: World objects played through the world map (huts, village, house, garden, torches)
         shell: bash
         run: |
-          set -o pipefail
-          timeout 120 godot --headless --path . --fixed-fps 60 --script res://tools/world_objects_test.gd 2>&1 | tee "$QA_LOG_DIR/world-objects.log"
-          grep -F 'WORLD OBJECTS PASS' "$QA_LOG_DIR/world-objects.log"
+          tools/run_godot_qa.sh 120 "$QA_LOG_DIR/world-objects.log" 'WORLD OBJECTS PASS' godot --headless --path . --fixed-fps 60 --script res://tools/world_objects_test.gd
       - name: 제작 tab keeps the row under the pointer in place (hut recipe picked, list redrawn)
         shell: bash
         run: |
-          set -o pipefail
-          timeout 120 godot --headless --path . --fixed-fps 60 --script res://tools/craft_tab_layout_test.gd 2>&1 | tee "$QA_LOG_DIR/craft-tab-layout.log"
-          grep -F 'CRAFT TAB LAYOUT PASS' "$QA_LOG_DIR/craft-tab-layout.log"
+          tools/run_godot_qa.sh 120 "$QA_LOG_DIR/craft-tab-layout.log" 'CRAFT TAB LAYOUT PASS' godot --headless --path . --fixed-fps 60 --script res://tools/craft_tab_layout_test.gd
       - name: Menu input (free delivery, held presses, swipes, kept popups and drafts)
         shell: bash
         run: |
-          set -o pipefail
-          timeout 300 godot --headless --path . --fixed-fps 60 --script res://tools/hud_input_test.gd 2>&1 | tee "$QA_LOG_DIR/hud-input.log"
-          grep -F 'HUD INPUT PASS' "$QA_LOG_DIR/hud-input.log"
+          tools/run_godot_qa.sh 300 "$QA_LOG_DIR/hud-input.log" 'HUD INPUT PASS' godot --headless --path . --fixed-fps 60 --script res://tools/hud_input_test.gd
       - name: Menu redraws keep the same list as a full redraw (every tab, random rows)
         shell: bash
         run: |
-          set -o pipefail
-          timeout 300 godot --headless --path . --fixed-fps 60 --script res://tools/hud_reconcile_test.gd 2>&1 | tee "$QA_LOG_DIR/hud-reconcile.log"
-          grep -F 'HUD RECONCILE PASS' "$QA_LOG_DIR/hud-reconcile.log"
+          tools/run_godot_qa.sh 300 "$QA_LOG_DIR/hud-reconcile.log" 'HUD RECONCILE PASS' godot --headless --path . --fixed-fps 60 --script res://tools/hud_reconcile_test.gd
       - name: World look and feedback (web sprites, clouds, fireflies, sway, rising texts, next-step card)
         shell: bash
         run: |
-          set -o pipefail
-          timeout 300 godot --headless --path . --fixed-fps 60 --script res://tools/world_effects_test.gd 2>&1 | tee "$QA_LOG_DIR/world-effects.log"
-          grep -F 'WORLD EFFECTS PASS' "$QA_LOG_DIR/world-effects.log"
+          tools/run_godot_qa.sh 300 "$QA_LOG_DIR/world-effects.log" 'WORLD EFFECTS PASS \([0-9]+ checks\)' godot --headless --path . --fixed-fps 60 --script res://tools/world_effects_test.gd
       - name: Long play with every effect on (nodes, objects and memory do not pile up)
-        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref != 'refs/heads/main')
         shell: bash
         run: |
-          set -o pipefail
-          timeout 600 godot --headless --path . --fixed-fps 60 --script res://tools/world_long_run_bench.gd -- --check 2>&1 | tee "$QA_LOG_DIR/world-long-run.log"
-          grep -F 'WORLD LONG RUN DONE' "$QA_LOG_DIR/world-long-run.log"
+          tools/run_godot_qa.sh 600 "$QA_LOG_DIR/world-long-run.log" 'WORLD LONG RUN DONE' godot --headless --path . --fixed-fps 60 --script res://tools/world_long_run_bench.gd -- --check
       - name: World action button with long labels (568x320, 740x360, 960x540)
         shell: bash
         run: |
-          set -o pipefail
-          timeout 300 godot --headless --path . --fixed-fps 60 --script res://tools/hud_action_test.gd 2>&1 | tee "$QA_LOG_DIR/hud-action.log"
-          grep -F 'HUD ACTION PASS' "$QA_LOG_DIR/hud-action.log"
+          tools/run_godot_qa.sh 300 "$QA_LOG_DIR/hud-action.log" 'HUD ACTION PASS \([0-9]+ checks\)' godot --headless --path . --fixed-fps 60 --script res://tools/hud_action_test.gd
       - name: Menu redraws while the game runs (rows added per 100 ticks, frame times)
-        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref != 'refs/heads/main')
         shell: bash
         run: |
-          set -o pipefail
-          timeout 300 godot --headless --path . --fixed-fps 60 --script res://tools/hud_redraw_bench.gd -- --check 2>&1 | tee "$QA_LOG_DIR/hud-redraw.log"
-          grep -F 'HUD REDRAW BENCH DONE' "$QA_LOG_DIR/hud-redraw.log"
+          tools/run_godot_qa.sh 300 "$QA_LOG_DIR/hud-redraw.log" 'HUD REDRAW BENCH DONE' godot --headless --path . --fixed-fps 60 --script res://tools/hud_redraw_bench.gd -- --check
       - name: Large saves with huts (import, autosave, load times and nothing lost)
-        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref != 'refs/heads/main')
         shell: bash
         run: |
-          set -o pipefail
-          mkdir -p "$RUNNER_TEMP/save-performance"
-          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/save-performance" godot --headless --path . --script res://tools/save_performance_test.gd 2>&1 | tee "$QA_LOG_DIR/save-performance.log"
-          grep -F 'SAVE PERFORMANCE PASS' "$QA_LOG_DIR/save-performance.log"
+          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/save-performance.log" 'SAVE PERFORMANCE PASS' godot --headless --path . --script res://tools/save_performance_test.gd
       - name: Failed import preserves world and protected save
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/world-save-failure"
-          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/world-save-failure" godot --headless --path . --script res://tools/world_save_failure_test.gd 2>&1 | tee "$QA_LOG_DIR/save-failure.log"
-      - name: Check for unexpected Godot errors
-        if: always()
-        run: |
-          shopt -s nullglob
-          logs=("$QA_LOG_DIR"/*.log)
-          if (( ${#logs[@]} == 0 )); then exit 1; fi
-          for log in "${logs[@]}"; do
-            pattern='SCRIPT ERROR:|Parse Error:|^ERROR:'
-            # These tests deliberately exercise failed or refused saves.
-            case "${log##*/}" in
-              save_recovery_test.log|save-failure.log|save-performance.log) pattern='SCRIPT ERROR:|Parse Error:' ;;
-            esac
-            if grep -nE "$pattern" "$log"; then exit 1; fi
-          done
+          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/save-failure.log" 'WORLD SAVE FAILURE PASS' godot --headless --path . --script res://tools/world_save_failure_test.gd
       - name: Keep headless world and parity logs
         if: always()
         uses: actions/upload-artifact@v4
