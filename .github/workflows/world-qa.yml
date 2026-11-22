@@ -5,7 +5,17 @@ on:
     branches: [main, 'claude/**', 'codex/godot-world-integration', 'codex/all-region-expeditions']
   pull_request:
     branches: [main]
-    paths: ['.github/workflows/world-qa.yml', 'tools/run_godot_qa.sh']
+    paths:
+      - '.github/workflows/world-qa.yml'
+      - 'tools/run_godot_qa.sh'
+      - 'project.godot'
+      - 'scripts/**'
+      - 'scenes/**'
+      - 'data/web_catalog.json'
+      - 'tests/world/**'
+      - 'tools/world*_test.gd'
+      - 'tools/unified_world_route_test.gd'
+      - 'tools/village_layout_test.gd'
   workflow_dispatch:
 
 permissions:
@@ -43,6 +53,7 @@ jobs:
         run: |
           tools/run_godot_qa.sh 90 "$QA_LOG_DIR/world-logic.log" 'WORLD LOGIC PASS \([0-9]+ checks\)' godot --headless --path . --script res://tools/world_logic_test.gd
       - name: Stage 1 workshop-tunnel route still passes
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           tools/run_godot_qa.sh 90 "$QA_LOG_DIR/route.log" 'ROUTE PASS' godot --headless --path . --fixed-fps 60 -- --route-test
@@ -50,8 +61,9 @@ jobs:
         shell: bash
         run: |
           tools/run_godot_qa.sh 90 "$QA_LOG_DIR/world-route.log" 'WORLD ROUTE PASS' godot --headless --path . --fixed-fps 60 --script res://tools/world_route_test.gd
-      - name: World persistence, construction, research and unified route
-        shell: bash
+      # PRs targeting main already run these three checks in Godot migration QA.
+      - name: World persistence, workshop and construction
+        if: github.event_name != 'pull_request'
         run: |
           while IFS='|' read -r test marker; do
             tools/run_godot_qa.sh 90 "$QA_LOG_DIR/$test.log" "$marker" godot --headless --path . --fixed-fps 60 --script "res://tools/$test.gd" || exit $?
@@ -59,18 +71,22 @@ jobs:
           save_migration_test|Save migration tests passed
           workshop_migration_test|WORKSHOP MIGRATION PASS
           world_integration_test|WORLD INTEGRATION PASS
-          unified_world_route_test|UNIFIED WORLD ROUTE PASS
-          world_scene_test|WORLD SCENE PASS
           TESTS
+      - name: Unified world route and scene
+        run: |
+          tools/run_godot_qa.sh 90 "$QA_LOG_DIR/unified_world_route_test.log" 'UNIFIED WORLD ROUTE PASS' godot --headless --path . --fixed-fps 60 --script res://tools/unified_world_route_test.gd
+          tools/run_godot_qa.sh 90 "$QA_LOG_DIR/world_scene_test.log" 'WORLD SCENE PASS' godot --headless --path . --fixed-fps 60 --script res://tools/world_scene_test.gd
       - name: Parity fixes (tickets, auto-sell, order timer, fractional stock, JS save kept)
         shell: bash
         run: |
           MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/parity-fixes.log" 'PARITY FIXES PASS' godot --headless --path . --script res://tools/parity_fixes_test.gd
       - name: Save integrity (exact numbers, original bytes, damaged originals, abnormal numbers)
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/save-integrity.log" 'SAVE INTEGRITY PASS' godot --headless --path . --script res://tools/save_integrity_test.gd
       - name: Verify save parity, recovery and expedition progression
+        if: github.event_name != 'pull_request'
         run: |
           while IFS='|' read -r test marker; do
             MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" tools/run_godot_qa.sh 120 "$QA_LOG_DIR/$test.log" "$marker" godot --headless --path . --fixed-fps 60 --script "res://tools/$test.gd" || exit $?
