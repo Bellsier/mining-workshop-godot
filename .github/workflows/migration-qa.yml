@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   web-save:
     name: Web save durability (${{ matrix.browser }})
@@ -101,6 +105,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Prepare headless log directory
+        run: |
+          mkdir -p "$RUNNER_TEMP/godot-migration-logs"
+          echo "QA_LOG_DIR=$RUNNER_TEMP/godot-migration-logs" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - name: Get Godot 4.4.1
         shell: bash
@@ -114,45 +122,61 @@ jobs:
       - name: Import assets and check scripts
         shell: bash
         run: |
-          godot --headless --path . --editor --import 2>&1 | tee "$RUNNER_TEMP/import.log"
-          ! grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$RUNNER_TEMP/import.log"
+          godot --headless --path . --editor --import 2>&1 | tee "$QA_LOG_DIR/import.log"
+          if grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$QA_LOG_DIR/import.log"; then exit 1; fi
       - name: Verify gameplay, save conversion and walking route
         shell: bash
         run: |
-          godot --headless --path . --script res://tools/workshop_migration_test.gd 2>&1 | tee "$RUNNER_TEMP/gameplay.log"
-          grep -F 'WORKSHOP MIGRATION PASS' "$RUNNER_TEMP/gameplay.log"
-          godot --headless --path . --script res://tools/save_migration_test.gd 2>&1 | tee "$RUNNER_TEMP/save.log"
-          grep -F 'Save migration tests passed' "$RUNNER_TEMP/save.log"
+          godot --headless --path . --script res://tools/workshop_migration_test.gd 2>&1 | tee "$QA_LOG_DIR/gameplay.log"
+          grep -F 'WORKSHOP MIGRATION PASS' "$QA_LOG_DIR/gameplay.log"
+          godot --headless --path . --script res://tools/save_migration_test.gd 2>&1 | tee "$QA_LOG_DIR/save.log"
+          grep -F 'Save migration tests passed' "$QA_LOG_DIR/save.log"
           mkdir -p "$RUNNER_TEMP/save-recovery"
-          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/save-recovery" godot --headless --path . --script res://tools/save_recovery_test.gd 2>&1 | tee "$RUNNER_TEMP/recovery.log"
-          grep -F 'SAVE RECOVERY PASS' "$RUNNER_TEMP/recovery.log"
-          godot --headless --path . --fixed-fps 60 -- --route-test 2>&1 | tee "$RUNNER_TEMP/route.log"
-          grep -F 'ROUTE PASS' "$RUNNER_TEMP/route.log"
-          ! grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$RUNNER_TEMP/"{gameplay,save,route}.log
+          MINING_QA_ISOLATED=1 XDG_DATA_HOME="$RUNNER_TEMP/save-recovery" godot --headless --path . --script res://tools/save_recovery_test.gd 2>&1 | tee "$QA_LOG_DIR/recovery.log"
+          grep -F 'SAVE RECOVERY PASS' "$QA_LOG_DIR/recovery.log"
+          godot --headless --path . --fixed-fps 60 -- --route-test 2>&1 | tee "$QA_LOG_DIR/route.log"
+          grep -F 'ROUTE PASS' "$QA_LOG_DIR/route.log"
+          if grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$QA_LOG_DIR/"{gameplay,save,route}.log; then exit 1; fi
           # The recovery test provokes failed writes on purpose; only script errors fail it here.
-          ! grep -E 'SCRIPT ERROR:|Parse Error:' "$RUNNER_TEMP/recovery.log"
+          if grep -E 'SCRIPT ERROR:|Parse Error:' "$QA_LOG_DIR/recovery.log"; then exit 1; fi
       - name: Verify regional investigations, puzzle order and save compatibility
         run: |
           set -o pipefail
-          XDG_DATA_HOME="$RUNNER_TEMP/region-story" godot --headless --fixed-fps 60 --script res://tools/region_story_test.gd 2>&1 | tee "$RUNNER_TEMP/region-story.log"
-          grep -Fx 'REGION STORY PASS' "$RUNNER_TEMP/region-story.log"
-          ! grep -E 'SCRIPT ERROR:|^ERROR:' "$RUNNER_TEMP/region-story.log"
+          XDG_DATA_HOME="$RUNNER_TEMP/region-story" godot --headless --fixed-fps 60 --script res://tools/region_story_test.gd 2>&1 | tee "$QA_LOG_DIR/region-story.log"
+          grep -Fx 'REGION STORY PASS' "$QA_LOG_DIR/region-story.log"
+          if grep -E 'SCRIPT ERROR:|^ERROR:' "$QA_LOG_DIR/region-story.log"; then exit 1; fi
       - name: Verify expedition gates, temple checkpoint and surface return
         run: |
           set -o pipefail
-          XDG_DATA_HOME="$RUNNER_TEMP/expedition" godot --headless --fixed-fps 60 --script res://tools/expedition_test.gd 2>&1 | tee "$RUNNER_TEMP/expedition.log"
-          grep -Fx 'EXPEDITION PASS' "$RUNNER_TEMP/expedition.log"
-          ! grep -E 'SCRIPT ERROR:|^ERROR:' "$RUNNER_TEMP/expedition.log"
-          XDG_DATA_HOME="$RUNNER_TEMP/expedition-polish" godot --headless --script res://tools/expedition_polish_test.gd 2>&1 | tee "$RUNNER_TEMP/expedition-polish.log"
-          grep -Fx 'EXPEDITION POLISH PASS' "$RUNNER_TEMP/expedition-polish.log"
-          ! grep -E 'SCRIPT ERROR:|^ERROR:' "$RUNNER_TEMP/expedition-polish.log"
+          XDG_DATA_HOME="$RUNNER_TEMP/expedition" godot --headless --fixed-fps 60 --script res://tools/expedition_test.gd 2>&1 | tee "$QA_LOG_DIR/expedition.log"
+          grep -Fx 'EXPEDITION PASS' "$QA_LOG_DIR/expedition.log"
+          if grep -E 'SCRIPT ERROR:|^ERROR:' "$QA_LOG_DIR/expedition.log"; then exit 1; fi
+          XDG_DATA_HOME="$RUNNER_TEMP/expedition-polish" godot --headless --script res://tools/expedition_polish_test.gd 2>&1 | tee "$QA_LOG_DIR/expedition-polish.log"
+          grep -Fx 'EXPEDITION POLISH PASS' "$QA_LOG_DIR/expedition-polish.log"
+          if grep -E 'SCRIPT ERROR:|^ERROR:' "$QA_LOG_DIR/expedition-polish.log"; then exit 1; fi
       - name: Verify tunnel construction conditions for visual QA
         shell: bash
         run: |
           set -o pipefail
-          godot --headless --path . --script res://tools/world_integration_test.gd 2>&1 | tee "$RUNNER_TEMP/construction.log"
-          grep -F 'WORLD INTEGRATION PASS' "$RUNNER_TEMP/construction.log"
-          ! grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$RUNNER_TEMP/construction.log"
+          godot --headless --path . --script res://tools/world_integration_test.gd 2>&1 | tee "$QA_LOG_DIR/construction.log"
+          grep -F 'WORLD INTEGRATION PASS' "$QA_LOG_DIR/construction.log"
+          if grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$QA_LOG_DIR/construction.log"; then exit 1; fi
+      - name: Verify imported save parity and exact original bytes
+        run: |
+          for test in save_parity_regression_test save_integrity_test; do
+            MINING_QA_ISOLATED=1 XDG_DATA_HOME="$(mktemp -d)" \
+              godot --headless --path . --script "res://tools/$test.gd" 2>&1 | tee "$QA_LOG_DIR/$test.log"
+            if grep -E 'SCRIPT ERROR:|Parse Error:|^ERROR:' "$QA_LOG_DIR/$test.log"; then exit 1; fi
+          done
+          grep -Fx 'SAVE PARITY REGRESSION PASS' "$QA_LOG_DIR/save_parity_regression_test.log"
+          grep -Fx 'SAVE INTEGRITY PASS' "$QA_LOG_DIR/save_integrity_test.log"
+      - name: Keep headless migration logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: godot-headless-migration-logs
+          path: ${{ env.QA_LOG_DIR }}
+          retention-days: 30
       - name: Build private Web preview
         shell: bash
         run: |
