@@ -13,9 +13,22 @@ on:
       - 'scenes/**'
       - 'data/web_catalog.json'
       - 'tests/world/**'
-      - 'tools/world*_test.gd'
+      # Keep these paths in sync with the tests this workflow runs on pull requests.
+      - 'tools/craft_hut_test.gd'
+      - 'tools/craft_tab_layout_test.gd'
+      - 'tools/economy_parity_test.gd'
+      - 'tools/hud_action_test.gd'
+      - 'tools/hud_input_test.gd'
+      - 'tools/hud_reconcile_test.gd'
+      - 'tools/parity_fixes_test.gd'
       - 'tools/unified_world_route_test.gd'
       - 'tools/village_layout_test.gd'
+      - 'tools/world_effects_test.gd'
+      - 'tools/world_logic_test.gd'
+      - 'tools/world_objects_test.gd'
+      - 'tools/world_route_test.gd'
+      - 'tools/world_save_failure_test.gd'
+      - 'tools/world_scene_test.gd'
   workflow_dispatch:
 
 permissions:
