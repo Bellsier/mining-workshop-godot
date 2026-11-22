@@ -95,8 +95,9 @@ static func parse_game(text: String) -> Dictionary:
 ## The text is parsed once (a large web save took most of an import to parse three times).
 static func import_text(text: String, bytes := PackedByteArray(), origin := "paste") -> Dictionary:
 	var value := _parse_object(text)
-	var state := _game_from(value)
-	return state if not state.is_empty() else _import_web(_web_payload(value), text, bytes, origin)
+	if value.has("version") and value.has("state"):
+		return _game_from(value)
+	return _import_web(_web_payload(value, true), text, bytes, origin)
 
 
 static func _game_from(envelope: Dictionary) -> Dictionary:
@@ -195,16 +196,32 @@ static func legacy_payload(text: String) -> Dictionary:
 	return _web_payload(_parse_object(text))
 
 
-static func _web_payload(value: Dictionary) -> Dictionary:
+## New imports validate the S2 envelope. Previously kept bytes still use the historical
+## reader so an older native save can restore and export its original unchanged.
+static func _web_payload(value: Dictionary, validate_s2 := false) -> Dictionary:
 	var payload: Variant = value
-	if payload.has("snapshot") and not payload.has("saveVersion"):
-		payload = payload["snapshot"]
-	if payload is Dictionary and payload.has("payload") and not payload.has("saveVersion"):
+	var is_row := value.has("snapshot") and not value.has("saveVersion")
+	if is_row:
+		if validate_s2:
+			var revision: Variant = value.get("revision")
+			if not _is_quantity(revision) or revision < 1 or revision > 9007199254740991 or floorf(revision) != revision:
+				return {}
+		payload = value["snapshot"]
+	if not payload is Dictionary:
+		return {}
+	var wrapped: bool = not payload.has("saveVersion")
+	if wrapped:
 		if not _is_version(payload.get("format"), 1):
 			return {}
-		payload = payload["payload"]
+		payload = payload.get("payload")
+	elif is_row and validate_s2:
+		return {}
 	if not payload is Dictionary or not _is_version(payload.get("saveVersion"), WEB_SAVE_VERSION):
 		return {}
+	if wrapped and validate_s2:
+		var saved_at: Variant = payload.get("savedAt")
+		if not (saved_at is int or saved_at is float) or not is_finite(saved_at) or not payload.get("permanent") is Dictionary:
+			return {}
 	return payload
 
 
@@ -214,7 +231,7 @@ static func _web_payload(value: Dictionary) -> Dictionary:
 ## `bytes` are the file's bytes for a file import; pasted text is kept as its UTF-8 bytes, which may
 ## already differ from the file it was copied from (line endings, for one).
 static func import_legacy(text: String, bytes := PackedByteArray(), origin := "paste") -> Dictionary:
-	return _import_web(legacy_payload(text), text, bytes, origin)
+	return _import_web(_web_payload(_parse_object(text), true), text, bytes, origin)
 
 
 static func _import_web(payload: Dictionary, text: String, bytes: PackedByteArray, origin: String) -> Dictionary:
@@ -226,12 +243,8 @@ static func _import_web(payload: Dictionary, text: String, bytes: PackedByteArra
 	if not run is Dictionary:
 		return {}
 	var gold: Variant = run.get("gold")
-	var resources: Variant = run.get("resources")
-	var products: Variant = run.get("products")
-	if not _is_quantity(gold) or not resources is Dictionary or not products is Dictionary:
-		return {}
-	var inventory := _quantity_map(resources)
-	inventory.merge(_quantity_map(products))
+	var inventory := _quantity_map(run.get("resources"))
+	inventory.merge(_quantity_map(run.get("products")))
 	var completed_research := {}
 	var research: Variant = run.get("research")
 	if research is Dictionary:
@@ -239,7 +252,7 @@ static func _import_web(payload: Dictionary, text: String, bytes: PackedByteArra
 			if research[key] is bool and research[key]:
 				completed_research[key] = true
 	var imported := {
-		"gold": gold,
+		"gold": gold if _is_quantity(gold) else 0.0,
 		"inventory": inventory,
 		"completed_research": completed_research,
 		"legacy_web_save": payload,
@@ -340,8 +353,10 @@ static func _is_version(value: Variant, expected: int) -> bool:
 	return (value is int or value is float) and value == expected
 
 
-static func _quantity_map(values: Dictionary) -> Dictionary:
+static func _quantity_map(values: Variant) -> Dictionary:
 	var quantities := {}
+	if not values is Dictionary:
+		return quantities
 	for key: String in values:
 		if _is_quantity(values[key]):
 			quantities[key] = values[key]

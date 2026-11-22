@@ -476,8 +476,14 @@ func _restore(source: Dictionary, mark_changes := true) -> void:
 					state.characters.append(record.duplicate(true))
 		state.unlocked_sites.merge(_dictionary(run.get("unlockedSites")), true)
 		state.unlocked_sites.abandonedMine = true
-		state.automation = {"craft": _dictionary(run.get("autoCraft")), "sell_owned": _dictionary(run.get("autoSell")),
-			"sell": _dictionary(run.get("autoSellOn")), "target": _dictionary(run.get("craftTarget"))}
+		var sale_owned := _dictionary(run.get("autoSell"))
+		var sale_switches := _dictionary(run.get("autoSellOn"))
+		for id: String in sale_owned:
+			if sale_owned[id] == true and _tables.recipes.has(id) and not sale_switches.get(id) is bool:
+				# The original only added a switch after auto-sell was already purchasable.
+				sale_switches[id] = true
+		state.automation = {"craft": _dictionary(run.get("autoCraft")), "sell_owned": sale_owned,
+			"sell": sale_switches, "target": _dictionary(run.get("craftTarget"))}
 		state.queue = run.get("craftQueue", {})
 		state.tickets = _count(permanent.get("tickets"), 0)
 		state.first_ticket = bool(permanent.get("firstGachaGranted", false))

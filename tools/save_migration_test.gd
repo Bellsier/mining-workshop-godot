@@ -40,7 +40,7 @@ func _test_legacy_import() -> void:
 	var legacy_run: Dictionary = legacy.get("run", {})
 	_check(legacy_run.has("unmapped_progress"), "unmapped progress is retained")
 	var snapshot := {"format": 1, "payload": payload}
-	var from_row := Save.import_legacy(JSON.stringify({"snapshot": snapshot}))
+	var from_row := Save.import_legacy(JSON.stringify({"revision": 1, "snapshot": snapshot}))
 	var from_payload := state.duplicate()
 	# The kept original differs (an S2 row vs. its payload); everything taken from it is the same.
 	for key in [Save.LEGACY_BYTES, Save.LEGACY_SHA256, Save.LEGACY_ORIGIN]:

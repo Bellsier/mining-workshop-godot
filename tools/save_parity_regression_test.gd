@@ -25,6 +25,8 @@ func _run() -> void:
 	_test_partial_world()
 	_test_idle_timers()
 	_test_delivery_boundaries()
+	_test_automatic_sale()
+	_test_envelopes()
 	if failures.is_empty():
 		print("SAVE PARITY REGRESSION PASS")
 	else:
@@ -205,3 +207,60 @@ func _test_delivery_boundaries() -> void:
 		"confirmed trade and order are not repeated after restart")
 	game.free()
 
+
+
+func _test_automatic_sale() -> void:
+	var payload := _fixture()
+	payload.run.world.tunnelContract = null
+	payload.run.autoSell = {"coalBrick": true, "steel": true, "alloy": true, "specialAlloy": true}
+	payload.run.autoSellOn = {"steel": false, "alloy": true, "specialAlloy": true, "manaLamp": true}
+	var game := _game(true)
+	check(game.import_save(Exact.stringify(payload)), "older sale settings import")
+	game = _restart(game)
+	game._process(0.1)
+	# JS tickAutoSell with the same 7484ccd fixture and these flags.
+	check(game.state.inventory.coalBrick == 0 and game.state.inventory.alloy == 0
+		and game.state.inventory.steel == 40 and game.state.inventory.specialAlloy == 60 and game.state.inventory.manaLamp == 61,
+		"missing/true/false/locked/workshop-only sale rules apply independently")
+	check(game.state.gold == 157903.89599999998, "automatic sale gold follows source without rounding")
+	game = _restart(game)
+	check(game.state.automation.sell.get("steel") == false and game.state.automation.sell.get("coalBrick") == true,
+		"explicit false and restored default survive native save")
+	game.free()
+
+
+func _test_envelopes() -> void:
+	var payload := _fixture()
+	payload.run.erase("resources")
+	var raw := Exact.stringify(payload)
+	var game := _game(true)
+	check(game.import_save(raw) and not game.state.inventory.has("iron") and game.state.inventory.steel == 40,
+		"plain JS v1 with missing resources retains existing products")
+	payload = _fixture()
+	var snapshot := {"format": 1, "savedAt": payload.savedAt, "payload": payload, "name": "공방"}
+	var row := {"revision": 1, "snapshot": snapshot}
+	var bytes := (Exact.stringify(row) + "\r\n").to_utf8_buffer()
+	check(game.import_save_bytes(bytes) and game.legacy_original_bytes() == bytes, "S2 row and metadata round-trip exactly")
+	var good := Save.read_raw()
+	var archived := {"snapshot": {"format": 1, "payload": {"saveVersion": 1, "run": payload.run}}}
+	var old_bytes := Exact.stringify(archived).to_utf8_buffer()
+	var old_godot := Save.parse_game(good)
+	old_godot[Save.LEGACY_BYTES] = Marshalls.raw_to_base64(old_bytes)
+	old_godot[Save.LEGACY_SHA256] = Save.sha256_hex(old_bytes)
+	old_godot["legacy_web_save"] = archived.snapshot.payload
+	check(game.import_save(Save.export_game(old_godot)) and game.legacy_original_bytes() == old_bytes,
+		"old native saves keep previously accepted S2 original bytes")
+	good = Save.read_raw()
+	var malformed := [
+		{"snapshot": snapshot, "revision": 0},
+		{"format": 2, "payload": payload},
+		{"format": 1, "payload": {"saveVersion": 1, "run": payload.run, "savedAt": 0}},
+		{"saveVersion": 1, "run": []},
+		{"saveVersion": 2, "run": payload.run},
+	]
+	for invalid in malformed:
+		check(not game.import_save(Exact.stringify(invalid)) and Save.read_raw() == good,
+			"invalid envelope does not replace active storage")
+	for text in ['{"saveVersion": 1, "run":{"gold": 1e999}}', '{"saveVersion": 1, "run": {']:
+		check(not game.import_save(text) and Save.read_raw() == good, "invalid number or JSON protects disk")
+	game.free()

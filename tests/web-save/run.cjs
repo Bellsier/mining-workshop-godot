@@ -444,8 +444,8 @@ async function loadFailure({ page, origin, note, shot }) {
 }
 
 async function s2Import({ page, baseline, note, shot }) {
-  const legacy = { saveVersion: 1, run: { gold: 37, resources: { iron: 7 }, products: {} } };
-  const json = JSON.stringify({ snapshot: { format: 1, payload: legacy } });
+  const legacy = { saveVersion: 1, savedAt: 1792000000000, permanent: {}, run: { gold: 37, resources: { iron: 7 }, products: {} } };
+  const json = JSON.stringify({ revision: 1, snapshot: { format: 1, payload: legacy } });
   await page.keyboard.press('i');
   await delay(250);
   await page.mouse.click(700, 118);
