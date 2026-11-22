@@ -145,6 +145,9 @@ func _test_partial_world() -> void:
 	var previous := Save.read_raw()
 	payload.run.world.base.x = []
 	check(not game.import_save(Exact.stringify(payload)) and Save.read_raw() == previous, "unsafe base keeps the previous disk save")
+	payload.run.world = saved_world.duplicate(true)
+	payload.run.world["size"] = "broken"
+	check(not game.import_save(Exact.stringify(payload)) and Save.read_raw() == previous, "unsafe world dimensions keep the previous disk save")
 	game.free()
 
 
@@ -213,7 +216,7 @@ func _test_delivery_boundaries() -> void:
 func _test_automatic_sale() -> void:
 	var payload := _fixture()
 	payload.run.world.tunnelContract = null
-	payload.run.autoSell = {"coalBrick": true, "steel": true, "alloy": true, "specialAlloy": true}
+	payload.run.autoSell = {"coalBrick": true, "steel": true, "alloy": true, "specialAlloy": true, "manaLamp": "invalid ownership"}
 	payload.run.autoSellOn = {"steel": false, "alloy": true, "specialAlloy": true, "manaLamp": true}
 	var game := _game(true)
 	check(game.import_save(Exact.stringify(payload)), "older sale settings import")

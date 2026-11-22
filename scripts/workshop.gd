@@ -479,7 +479,9 @@ func _restore(source: Dictionary, mark_changes := true) -> void:
 		var sale_owned := _dictionary(run.get("autoSell"))
 		var sale_switches := _dictionary(run.get("autoSellOn"))
 		for id: String in sale_owned:
-			if sale_owned[id] == true and _tables.recipes.has(id) and not sale_switches.get(id) is bool:
+			var bought: bool = sale_owned[id] is bool and sale_owned[id]
+			sale_owned[id] = bought
+			if bought and _tables.recipes.has(id) and not sale_switches.get(id) is bool:
 				# The original only added a switch after auto-sell was already purchasable.
 				sale_switches[id] = true
 		state.automation = {"craft": _dictionary(run.get("autoCraft")), "sell_owned": sale_owned,
@@ -2116,7 +2118,10 @@ func _valid_world_header(value: Variant) -> bool:
 	var layout_seed: Variant = value.get("layoutSeed", 0)
 	if not (layout_seed is int or layout_seed is float) or absf(float(layout_seed)) > 9007199254740992.0:
 		return false
-	if value.get("size") == World.SEEDED_SIZE and value.get("generatorVersion", 2) not in [1, 2]:
+	var size: Variant = value.get("size")
+	if size != null and not (size is int or size is float):
+		return false
+	if size == World.SEEDED_SIZE and value.get("generatorVersion", 2) not in [1, 2]:
 		return false
 	return value.get("tunnelUnlocked", false) is bool
 
