@@ -365,7 +365,8 @@ static func from_dict(d: Dictionary) -> RefCounted:
 		clean.x = int(x)
 		clean.y = int(y)
 		clean.grade = int(m.get("grade", WorldGen.resource_grade(m.resource)))
-		clean.miningPower = int(m.get("miningPower", 1))
+		var power := float(m.get("miningPower", 1))
+		clean.miningPower = int(power) if floorf(power) == power else power
 		clean.developmentState = str(m.get("developmentState", "unsecured"))
 		s.mines.append(clean)
 	for id: Variant in d.get("hiddenMineIds", []):

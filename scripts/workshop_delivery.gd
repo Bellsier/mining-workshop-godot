@@ -103,8 +103,9 @@ static func ship(data: Dictionary, state: Dictionary, company_id: String, produc
 
 static func tick(data: Dictionary, state: Dictionary, delta: float, economy_multiplier: float = -1.0) -> Dictionary:
 	var messages: Array = []
+	var timers_changed := false
 	if delta <= 0.0:
-		return {"changed": false, "messages": messages}
+		return {"changed": false, "timers_changed": false, "messages": messages}
 	var companies := _company_progress(data, state)
 	var rep := reputation(data, state)
 	var rate := economy_multiplier if economy_multiplier >= 0.0 else _economy_multiplier(data, state)
@@ -115,6 +116,8 @@ static func tick(data: Dictionary, state: Dictionary, delta: float, economy_mult
 	var cap := 2 if rep >= int(order_rules.get("SECOND_SLOT_AT", 18)) else 1
 	for company: Dictionary in _open_companies(data, state):
 		var progress: Dictionary = companies[company["key"]]
+		var order_before := float(progress["orderTimer"])
+		var trade_before := float(progress["tradeTimer"])
 		var orders: Array = progress["open"]
 		if orders.size() >= cap:
 			progress["orderTimer"] = 0.0
@@ -131,7 +134,8 @@ static func tick(data: Dictionary, state: Dictionary, delta: float, economy_mult
 			var trade_message := _regular_trade(data, state, company, progress, delta, rate)
 			if not trade_message.is_empty():
 				messages.append(trade_message)
-	return {"changed": not messages.is_empty(), "messages": messages}
+		timers_changed = timers_changed or order_before != float(progress["orderTimer"]) or trade_before != float(progress["tradeTimer"])
+	return {"changed": not messages.is_empty(), "timers_changed": timers_changed, "messages": messages}
 
 
 static func _delivery(data: Dictionary, state: Dictionary) -> Dictionary:
