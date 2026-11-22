@@ -335,6 +335,17 @@ func to_dict() -> Dictionary:
 			d[k] = seeded[k].duplicate(true) if seeded[k] is Dictionary else seeded[k]
 	return d
 
+## ExactJson reads integer JSON literals as doubles. Accept either numeric representation.
+static func seeded_context(d: Dictionary) -> Dictionary:
+	var size: Variant = d.get("size")
+	var version: Variant = d.get("generatorVersion", 2)
+	if not (size is int or size is float) or size != SEEDED_SIZE:
+		return {}
+	if not (version is int or version is float) or (version != 1 and version != 2):
+		return {}
+	var context := {"seed": d.get("seed"), "generatorVersion": int(version)}
+	return context if ChunkGen.is_valid_context(context) else {}
+
 ## Rebuilds a world from to_dict() output or a web save's state.world. Unknown or broken entries are
 ## dropped (mines must have an id, integer cells inside the bounds and a known resource).
 static func from_dict(d: Dictionary) -> RefCounted:
@@ -373,11 +384,10 @@ static func from_dict(d: Dictionary) -> RefCounted:
 		if ids.has(str(id)) and not s.hidden_ids.has(str(id)):
 			s.hidden_ids.append(str(id))
 	s.tunnel_unlocked = d.get("tunnelUnlocked", false) == true
-	if d.get("size") == SEEDED_SIZE or d.get("size") == float(SEEDED_SIZE):
-		var ctx := {"seed": d.get("seed"), "generatorVersion": int(d.get("generatorVersion", 2))}
-		if ChunkGen.is_valid_context(ctx):
-			s.seeded = {"seed": int(d.seed), "size": SEEDED_SIZE, "generatorVersion": ctx.generatorVersion,
-				"chunkEditsVersion": 1, "chunkEdits": (d.get("chunkEdits", {}) as Dictionary).duplicate(true)}
+	var context := seeded_context(d)
+	if not context.is_empty():
+		s.seeded = {"seed": int(context.seed), "size": SEEDED_SIZE, "generatorVersion": context.generatorVersion,
+			"chunkEditsVersion": 1, "chunkEdits": (d.get("chunkEdits", {}) as Dictionary).duplicate(true)}
 	s.workshops = CraftHuts.sanitize(d.get("workshops", []), _recipe_table(), s.is_seeded())
 	s.torches = sanitize_torches(d.get("torches", []), s.is_seeded())
 	s.tunnel_contract = {} if s.tunnel_unlocked else sanitize_contract(d.get("tunnelContract"))

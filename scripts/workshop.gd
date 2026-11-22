@@ -500,7 +500,7 @@ func _restore(source: Dictionary, mark_changes := true) -> void:
 	state.queue = _restore_queue(state.queue)
 	var legacy_world := _dictionary(legacy_run.get("world"))
 	var world_data: Dictionary = source.get("world", legacy_world)
-	if not source.has("world") and (legacy_world.has("base") or legacy_world.has("mines")):
+	if not source.has("world") and (legacy_world.has("base") or legacy_world.has("mines") or not World.seeded_context(legacy_world).is_empty()):
 		world_data = _restore_legacy_mines(legacy_world)
 	# A Godot save written before huts, torches and the tunnel job were ported has none of them in its world.
 	# Those of the web save it was imported from are then taken from that save, so they are not lost.
@@ -2121,7 +2121,7 @@ func _valid_world_header(value: Variant) -> bool:
 	var size: Variant = value.get("size")
 	if size != null and not (size is int or size is float):
 		return false
-	if size == World.SEEDED_SIZE and value.get("generatorVersion", 2) not in [1, 2]:
+	if size == World.SEEDED_SIZE and World.seeded_context(value).is_empty():
 		return false
 	return value.get("tunnelUnlocked", false) is bool
 
@@ -2150,9 +2150,26 @@ func _restore_legacy_mines(raw: Dictionary) -> Dictionary:
 	restored.mines = []
 	var mines: Variant = raw.get("mines")
 	if mines is Array:
-		for mine in mines:
-			if _valid_mine_shape(mine) and CraftHuts.is_valid_cell(mine.get("x"), "x", seeded) 					and CraftHuts.is_valid_cell(mine.get("y"), "y", seeded):
-				restored.mines.append(mine)
+		for record: Variant in mines:
+			if not record is Dictionary:
+				continue
+			var id: Variant = record.get("id")
+			if not id is String or id.is_empty() or id.begins_with("gen:v"):
+				continue
+			if not CraftHuts.is_valid_cell(record.get("x"), "x", seeded) or not CraftHuts.is_valid_cell(record.get("y"), "y", seeded):
+				continue
+			var mine: Dictionary = record.duplicate()
+			var grade: Variant = mine.get("grade")
+			var power: Variant = mine.get("miningPower")
+			var resource: Variant = mine.get("resource")
+			mine["grade"] = grade if _is_count(grade) and grade >= 1 else 1
+			mine["miningPower"] = power if _is_nonnegative_number(power) and power > 0 and power <= 9007199254740992.0 else 1
+			var valid_resource: bool = resource is String and _tables.resources.has(resource)
+			var secured: bool = valid_resource and mine.get("developmentState") is String and mine.developmentState == "secured"
+			mine["resource"] = resource if valid_resource else data.resources[0].key
+			# A replaced resource must be secured again before it can yield passive income.
+			mine["developmentState"] = "secured" if secured else "unsecured"
+			restored.mines.append(mine)
 	var hidden: Variant = raw.get("hiddenMineIds")
 	restored.hiddenMineIds = hidden.filter(func(id: Variant) -> bool: return id is String) if hidden is Array else []
 	return restored

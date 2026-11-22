@@ -23,10 +23,12 @@ func _run() -> void:
 		return
 	_test_queue()
 	_test_partial_world()
+	_test_legacy_mine_repair()
 	_test_idle_timers()
 	_test_delivery_boundaries()
 	_test_automatic_sale()
 	_test_envelopes()
+	_test_replacement_isolation()
 	if failures.is_empty():
 		print("SAVE PARITY REGRESSION PASS")
 	else:
@@ -151,6 +153,57 @@ func _test_partial_world() -> void:
 	game.free()
 
 
+func _test_legacy_mine_repair() -> void:
+	var payload := _fixture()
+	var game := _game()
+	var map: Dictionary = payload.run.world
+	map.mines = [
+		{"id": "good", "x": 4, "y": 0, "resource": "iron", "grade": 2, "miningPower": 1.5, "developmentState": "secured"},
+		{"id": "grade", "x": 4, "y": 1, "resource": "coal", "grade": "broken", "developmentState": "secured"},
+		{"id": "resource", "x": 4, "y": 2, "resource": ["broken"], "grade": 2, "miningPower": -1, "developmentState": "secured"},
+		{"id": "good", "x": 4, "y": 3, "resource": "coal"},
+		{"x": 4, "y": 4, "resource": "coal"},
+		{"id": "outer", "x": 31, "y": 0, "resource": "iron"},
+		{"id": "too-far", "x": 32, "y": 0, "resource": "iron"},
+	]
+	map.hiddenMineIds = ["grade", "resource", "outer", "missing", "grade", 12]
+	var raw := (Exact.stringify(payload) + "\r\n").to_utf8_buffer()
+	check(game.import_save_bytes(raw), "partially damaged mine records import")
+	var mines: Array = game.world.mines
+	check(mines.map(func(m): return m.id) == ["good", "grade", "resource"],
+		"repair keeps recoverable IDs, rejects ambiguous identities and respects old map bounds")
+	var by_id := {}
+	for mine: Dictionary in mines:
+		by_id[mine.id] = mine
+	check(by_id.get("good", {}).get("miningPower") == 1.5 and by_id.get("good", {}).get("developmentState") == "secured",
+		"valid vein, fractional power and first occurrence of duplicate ID survive")
+	check(by_id.get("grade", {}).get("grade") == 1 and by_id.get("grade", {}).get("resource") == "coal",
+		"invalid grade receives the JS default without losing the vein")
+	check(by_id.get("resource", {}).get("resource") == "iron" and by_id.get("resource", {}).get("miningPower") == 1
+		and by_id.get("resource", {}).get("developmentState") == "unsecured",
+		"fallback iron requires securing and cannot resume passive production")
+	check(game.world.hidden_ids == ["grade", "resource"] and game.legacy_original_bytes() == raw,
+		"hidden IDs refer only to kept veins and raw bytes stay unchanged")
+	check(game.import_save(game.export_save()) and game.world.mines.size() == 3 and game.legacy_original_bytes() == raw,
+		"repaired mines and source bytes survive a native round trip")
+
+	map["size"] = 256
+	map["seed"] = 42
+	map["generatorVersion"] = 2
+	map["chunkEdits"] = {}
+	map.hiddenMineIds = "broken"
+	check(game.import_save(Exact.stringify(payload)) and game.world.is_seeded()
+		and game.world.mines.any(func(m): return m.id == "outer") and not game.world.mines.any(func(m): return m.id == "too-far")
+		and game.world.hidden_ids.is_empty(), "seeded saves allow integer cells up to 31 and repair a malformed hidden list")
+	check(game.import_save(game.export_save()) and game.world.is_seeded()
+		and game.world.mines.any(func(m): return m.id == "outer"), "native round trip keeps the seeded world and its coordinates")
+	var before: String = game.export_save()
+	map.seed = "bad seed"
+	check(not game.import_save(Exact.stringify(payload)) and game.export_save() == before,
+		"invalid seed cannot apply outer coordinates on a regular map")
+	game.free()
+
+
 func _idle_payload() -> Dictionary:
 	var payload := _fixture()
 	for vein: Dictionary in payload.run.world.mines:
@@ -243,8 +296,12 @@ func _test_envelopes() -> void:
 	payload = _fixture()
 	var snapshot := {"format": 1, "savedAt": payload.savedAt, "payload": payload, "name": "공방"}
 	var row := {"revision": 1, "snapshot": snapshot}
+	check(game.import_save(Exact.stringify(snapshot)), "standalone S2 snapshot imports")
 	var bytes := (Exact.stringify(row) + "\r\n").to_utf8_buffer()
-	check(game.import_save_bytes(bytes) and game.legacy_original_bytes() == bytes, "S2 row and metadata round-trip exactly")
+	check(game.import_save_bytes(bytes) and game.legacy_original_bytes() == bytes
+		and game.legacy_original_info().sha256 == Save.sha256_hex(bytes), "S2 row keeps metadata, exact bytes and SHA-256")
+	row.revision = 9007199254740991
+	check(game.import_save(Exact.stringify(row)), "S2 accepts the maximum safe revision")
 	var good := Save.read_raw()
 	var archived := {"snapshot": {"format": 1, "payload": {"saveVersion": 1, "run": payload.run}}}
 	var old_bytes := Exact.stringify(archived).to_utf8_buffer()
@@ -255,8 +312,16 @@ func _test_envelopes() -> void:
 	check(game.import_save(Save.export_game(old_godot)) and game.legacy_original_bytes() == old_bytes,
 		"old native saves keep previously accepted S2 original bytes")
 	var malformed := [
+		{"snapshot": snapshot},
 		{"snapshot": snapshot, "revision": 0},
+		{"snapshot": snapshot, "revision": 1.5},
+		{"snapshot": snapshot, "revision": 9007199254740992},
+		{"snapshot": snapshot, "revision": "1"},
 		{"format": 2, "payload": payload},
+		{"payload": payload},
+		{"format": 1, "payload": {"saveVersion": 1, "run": payload.run, "permanent": {}}},
+		{"format": 1, "payload": {"saveVersion": 1, "run": payload.run, "permanent": {}, "savedAt": null}},
+		{"format": 1, "payload": {"saveVersion": 1, "run": [], "permanent": {}, "savedAt": 0}},
 		{"format": 1, "payload": {"saveVersion": 1, "run": payload.run, "savedAt": 0}},
 		{"saveVersion": 1, "run": []},
 		{"saveVersion": 2, "run": payload.run},
@@ -268,4 +333,33 @@ func _test_envelopes() -> void:
 	for text in ['{"saveVersion": 1, "run":{"gold": 1e999}}', '{"saveVersion": 1, "run": {']:
 		var before := Save.read_raw()
 		check(not game.import_save(text) and Save.read_raw() == before, "invalid number or JSON protects disk")
+	game.free()
+
+
+func _test_replacement_isolation() -> void:
+	var payload := _fixture()
+	var game := _game(true)
+	check(game.import_save(Exact.stringify(payload)), "prepare isolation baseline")
+	game._process(0.3)
+	var active: Dictionary = game.state.duplicate(true)
+	var world: RefCounted = game.world
+	var map: Dictionary = world.to_dict()
+	var signals := [world.discovered.get_connections().size(), world.tunnel_opened.get_connections().size()]
+	var save_flags := [game._dirty, game._dirty_gameplay, game._dirty_shown, game._save_elapsed, game._elapsed,
+		game._retry_at, game._web_operation, game.save_status, game._village_try_key]
+	var raw := Save.read_raw()
+	payload.run.gold = 444
+	for i in 3:
+		var candidate: Dictionary = game._prepare_replacement(Save.import_legacy(Exact.stringify(payload)))
+		check(candidate.get("gold") == 444, "replacement builds a distinct candidate")
+	check(game.world == world and game.World.current() == world and world.to_dict() == map and game.state == active,
+		"repeated candidate normalization preserves the live world, progress and global reference")
+	check([world.discovered.get_connections().size(), world.tunnel_opened.get_connections().size()] == signals,
+		"normalization does not reconnect live signals")
+	check([game._dirty, game._dirty_gameplay, game._dirty_shown, game._save_elapsed, game._elapsed,
+		game._retry_at, game._web_operation, game.save_status, game._village_try_key] == save_flags and Save.read_raw() == raw,
+		"candidate normalization does not change timers, save flags or bytes")
+	check(not game.import_save('{"format":1,"payload":{"saveVersion":1,"run":[]}}') and game.state == active
+		and game.World.current() == world and Save.read_raw() == raw,
+		"failed S2 import leaves live progress, world and disk intact")
 	game.free()
