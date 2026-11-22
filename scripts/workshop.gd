@@ -415,13 +415,7 @@ func set_aside_protected(replacement: Dictionary) -> bool:
 		return _reject("먼저 원본 저장을 내보내 주세요. 원본은 그대로 보호하고 있어요.")
 	if not _web_operation.is_empty():
 		return _reject("저장 확인 중이에요. 잠시 후 다시 시도해 주세요.")
-	var old_state := state
-	var old_world := world
-	_restore(replacement)
-	var candidate := state
-	state = old_state
-	world = old_world
-	World.set_current(world)
+	var candidate := _prepare_replacement(replacement)
 	if OS.has_feature("web") and persistence_enabled:
 		var backup := WEB_PROTECTED_BACKUP + (_protected_revision if not _protected_revision.is_empty() else Crypto.new().generate_random_bytes(8).hex_encode())
 		var expected := _protected_revision if _protected_source == "slot:main" else ""
@@ -443,7 +437,7 @@ func set_aside_protected(replacement: Dictionary) -> bool:
 	_apply_import(candidate, "원본 저장을 %s 로 보관했어요." % kept[0].get_file())
 	return true
 
-func _restore(source: Dictionary) -> void:
+func _restore(source: Dictionary, mark_changes := true) -> void:
 	state = {
 		"gold": 0.0, "inventory": {}, "completed_research": {}, "unlocked_sites": {"abandonedMine": true},
 		"characters": [], "automation": {"craft": {}, "sell_owned": {}, "sell": {}, "target": {}},
@@ -482,13 +476,17 @@ func _restore(source: Dictionary) -> void:
 					state.characters.append(record.duplicate(true))
 		state.unlocked_sites.merge(_dictionary(run.get("unlockedSites")), true)
 		state.unlocked_sites.abandonedMine = true
-		state.automation = {"craft": _dictionary(run.get("autoCraft")), "sell_owned": _dictionary(run.get("autoSell")),
-			"sell": _dictionary(run.get("autoSellOn")), "target": _dictionary(run.get("craftTarget"))}
-		var old_queue := _dictionary(run.get("craftQueue"))
-		for id: String in old_queue:
-			var time: Variant = old_queue[id]
-			if (time is float or time is int) and time > 0.0 and _tables.recipes.has(id):
-				state.queue[id] = float(time)
+		var sale_owned := _dictionary(run.get("autoSell"))
+		var sale_switches := _dictionary(run.get("autoSellOn"))
+		for id: String in sale_owned:
+			var bought: bool = sale_owned[id] is bool and sale_owned[id]
+			sale_owned[id] = bought
+			if bought and _tables.recipes.has(id) and not sale_switches.get(id) is bool:
+				# The original only added a switch after auto-sell was already purchasable.
+				sale_switches[id] = true
+		state.automation = {"craft": _dictionary(run.get("autoCraft")), "sell_owned": sale_owned,
+			"sell": sale_switches, "target": _dictionary(run.get("craftTarget"))}
+		state.queue = run.get("craftQueue", {})
 		state.tickets = _count(permanent.get("tickets"), 0)
 		state.first_ticket = bool(permanent.get("firstGachaGranted", false))
 		state.hq_level = _count(run.get("hqLevel"), 0)
@@ -499,8 +497,11 @@ func _restore(source: Dictionary) -> void:
 		state.last_pull = _dictionary(run.get("lastPull")) if _valid_worker(run.get("lastPull")) else {}
 		state.auto_line_logged = run.get("autoLineLogged") == true
 
+	state.queue = _restore_queue(state.queue)
 	var legacy_world := _dictionary(legacy_run.get("world"))
 	var world_data: Dictionary = source.get("world", legacy_world)
+	if not source.has("world") and (legacy_world.has("base") or legacy_world.has("mines") or not World.seeded_context(legacy_world).is_empty()):
+		world_data = _restore_legacy_mines(legacy_world)
 	# A Godot save written before huts, torches and the tunnel job were ported has none of them in its world.
 	# Those of the web save it was imported from are then taken from that save, so they are not lost.
 	for key in ["workshops", "torches", "tunnelContract"]:
@@ -543,15 +544,16 @@ func _restore(source: Dictionary) -> void:
 	# Trial-scene pixels are not coordinates on the unified world map.
 	if str(state.position.get("scene", "")) in ["res://scenes/overworld.tscn", "res://scenes/tunnel.tscn"]:
 		state.position = {}
-	_record_world()
+	_record_world(false, mark_changes)
 
-func _record_world(background := false) -> void:
+func _record_world(background := false, mark_changes := true) -> void:
 	if world == null:
 		return
 	var value: Dictionary = world.to_dict()
 	if state.get("world", {}) != value:
 		state["world"] = value
-		_mark_dirty(false, background)
+		if mark_changes:
+			_mark_dirty(false, background)
 	state.tunnel_open = world.tunnel_unlocked
 
 func investigate_landmark(id: String) -> String:
@@ -1709,14 +1711,7 @@ func _import(json_text: String, bytes: PackedByteArray, origin: String) -> bool:
 		return set_aside_protected(imported)
 	if _save_blocked and persistence_enabled:
 		return _reject("지금은 저장할 수 없어서 가져오기를 적용하지 않았어요. 저장 상태를 먼저 확인해 주세요.")
-	var old_state := state
-	var old_world := world
-	# Normalize the candidate with the same rules as an on-disk save.
-	_restore(imported)
-	var candidate := state
-	state = old_state
-	world = old_world
-	World.set_current(world)
+	var candidate := _prepare_replacement(imported)
 	if persistence_enabled and OS.has_feature("web"):
 		_web_candidate = candidate
 		# The replaced save is kept under WEB_IMPORT_BACKUP in the same transaction.
@@ -1726,6 +1721,19 @@ func _import(json_text: String, bytes: PackedByteArray, origin: String) -> bool:
 		return _reject("가져온 데이터를 저장하지 못해서 적용하지 않았어요. 기존 저장은 그대로예요.")
 	_apply_import(candidate)
 	return true
+
+func _prepare_replacement(source: Dictionary) -> Dictionary:
+	var old_state := state
+	var old_world := world
+	var old_village_key := _village_try_key
+	# Normalize a candidate without marking the live save dirty before the write succeeds.
+	_restore(source, false)
+	var candidate := state
+	state = old_state
+	world = old_world
+	_village_try_key = old_village_key
+	World.set_current(world)
+	return candidate
 
 func _apply_import(candidate: Dictionary, message := "저장 불러오기 완료") -> void:
 	_restore(candidate)
@@ -1932,6 +1940,8 @@ func _tick() -> bool:
 	# The web tickStep order: recipe cards, the huts, regular trade, orders, then auto-sell.
 	mutated = _tick_huts() or mutated
 	var delivery := Delivery.tick(data, state, TICK, _multiplier())
+	if delivery.timers_changed:
+		_mark_dirty(false, true)
 	for message: String in delivery.get("messages", []):
 		feedback.emit(message)
 	for row: Dictionary in data.recipes:
@@ -1954,12 +1964,7 @@ func _valid_save_state(imported: Dictionary) -> bool:
 	var legacy: Dictionary = _dictionary(imported.get("legacy_web_save"))
 	var legacy_run: Dictionary = _dictionary(legacy.get("run"))
 	if not imported.has("world") and legacy_run.has("world"):
-		var legacy_world: Variant = legacy_run.world
-		if not legacy_world is Dictionary:
-			return false
-		if legacy_world.has("mines"):
-			if not _valid_world(legacy_world): return false
-		elif not legacy_world.get("tunnelUnlocked", false) is bool:
+		if not _valid_legacy_world(legacy_run.world):
 			return false
 	if imported.has("world") and not _valid_world(imported.world):
 		return false
@@ -1971,7 +1976,7 @@ func _valid_save_state(imported: Dictionary) -> bool:
 		return false
 	if not (imported.get("gold") is int or imported.get("gold") is float) or float(imported.gold) < 0.0:
 		return false
-	for key in ["inventory", "completed_research", "unlocked_sites", "automation", "queue", "facility", "workforce", "stats", "position", "legacy_web_save", "delivery", "last_pull"]:
+	for key in ["inventory", "completed_research", "unlocked_sites", "automation", "facility", "workforce", "stats", "position", "legacy_web_save", "delivery", "last_pull"]:
 		if imported.has(key) and not imported[key] is Dictionary:
 			return false
 	if not imported.get("inventory") is Dictionary:
@@ -1984,9 +1989,6 @@ func _valid_save_state(imported: Dictionary) -> bool:
 		return false
 	for worker in imported.get("characters", []):
 		if not _valid_worker(worker):
-			return false
-	for id in imported.get("queue", {}):
-		if not _tables.recipes.has(id) or not (imported.queue[id] is int or imported.queue[id] is float):
 			return false
 	for key in ["craft", "sell_owned", "sell", "target"]:
 		if imported.has("automation") and not imported.automation.get(key) is Dictionary:
@@ -2093,10 +2095,21 @@ func _reject(message: String) -> bool:
 	feedback.emit(message)
 	return false
 
-func _valid_world(value: Variant) -> bool:
-	if not value is Dictionary or not value.get("mines") is Array or not value.get("hiddenMineIds", []) is Array:
-		return false
-	if not value.get("base", {}) is Dictionary or not value.get("chunkEdits", {}) is Dictionary:
+## Zero means a paid craft waiting for its completion tick. Invalid entries are discarded individually.
+func _restore_queue(raw: Variant) -> Dictionary:
+	var queue := {}
+	if raw is Dictionary:
+		for id in raw:
+			var seconds: Variant = raw[id]
+			if _tables.recipes.has(id) and _is_nonnegative_number(seconds):
+				queue[id] = float(seconds)
+	return queue
+
+func _is_nonnegative_number(value: Variant) -> bool:
+	return (value is int or value is float) and is_finite(float(value)) and value >= 0
+
+func _valid_world_header(value: Variant) -> bool:
+	if not value is Dictionary or not value.get("base", {}) is Dictionary or not value.get("chunkEdits", {}) is Dictionary:
 		return false
 	for axis in ["x", "y", "level"]:
 		var v: Variant = value.get("base", {}).get(axis, 0)
@@ -2105,18 +2118,72 @@ func _valid_world(value: Variant) -> bool:
 	var layout_seed: Variant = value.get("layoutSeed", 0)
 	if not (layout_seed is int or layout_seed is float) or absf(float(layout_seed)) > 9007199254740992.0:
 		return false
-	if not value.get("tunnelUnlocked", false) is bool:
+	var size: Variant = value.get("size")
+	if size != null and not (size is int or size is float):
+		return false
+	if size == World.SEEDED_SIZE and World.seeded_context(value).is_empty():
+		return false
+	return value.get("tunnelUnlocked", false) is bool
+
+func _valid_legacy_world(value: Variant) -> bool:
+	if not _valid_world_header(value):
+		return false
+	var base: Dictionary = value.get("base", {})
+	var seeded: bool = value.get("size") == World.SEEDED_SIZE
+	for axis in ["x", "y"]:
+		if base.has(axis) and not CraftHuts.is_valid_cell(base[axis], axis, seeded):
+			return false
+	if base.get("level", 1) < 1:
+		return false
+	# A malformed list with no usable base is ambiguous. A missing list is valid in older saves.
+	return not value.has("mines") or value.mines is Array or not base.is_empty()
+
+func _valid_mine_shape(mine: Variant) -> bool:
+	if not mine is Dictionary or not mine.get("id") is String or not _tables.resources.has(mine.get("resource")):
+		return false
+	var power: Variant = mine.get("miningPower", 1)
+	return _is_count(mine.get("grade", 1)) and _is_nonnegative_number(power) and power <= 9007199254740992.0
+
+func _restore_legacy_mines(raw: Dictionary) -> Dictionary:
+	var restored := raw.duplicate()
+	var seeded: bool = raw.get("size") == World.SEEDED_SIZE
+	restored.mines = []
+	var mines: Variant = raw.get("mines")
+	if mines is Array:
+		for record: Variant in mines:
+			if not record is Dictionary:
+				continue
+			var id: Variant = record.get("id")
+			if not id is String or id.is_empty() or id.begins_with("gen:v"):
+				continue
+			if not CraftHuts.is_valid_cell(record.get("x"), "x", seeded) or not CraftHuts.is_valid_cell(record.get("y"), "y", seeded):
+				continue
+			var mine: Dictionary = record.duplicate()
+			var grade: Variant = mine.get("grade")
+			var power: Variant = mine.get("miningPower")
+			var resource: Variant = mine.get("resource")
+			mine["grade"] = grade if _is_count(grade) and grade >= 1 else 1
+			mine["miningPower"] = power if _is_nonnegative_number(power) and power > 0 and power <= 9007199254740992.0 else 1
+			var valid_resource: bool = resource is String and _tables.resources.has(resource)
+			var secured: bool = valid_resource and mine.get("developmentState") is String and mine.developmentState == "secured"
+			mine["resource"] = resource if valid_resource else data.resources[0].key
+			# A replaced resource must be secured again before it can yield passive income.
+			mine["developmentState"] = "secured" if secured else "unsecured"
+			restored.mines.append(mine)
+	var hidden: Variant = raw.get("hiddenMineIds")
+	restored.hiddenMineIds = hidden.filter(func(id: Variant) -> bool: return id is String) if hidden is Array else []
+	return restored
+
+func _valid_world(value: Variant) -> bool:
+	if not _valid_world_header(value) or not value.get("mines") is Array or not value.get("hiddenMineIds", []) is Array:
 		return false
 	var ids := {}
 	for m in value.mines:
-		if not m is Dictionary or not m.get("id") is String or ids.has(m.id) or not _tables.resources.has(m.get("resource")):
+		if not _valid_mine_shape(m) or ids.has(m.id):
 			return false
 		for axis in ["x", "y"]:
 			var v: Variant = m.get(axis)
 			if not (v is int or v is float) or not is_finite(float(v)) or floor(float(v)) != float(v) or absf(float(v)) > 32:
-				return false
-		for key in ["grade", "miningPower"]:
-			if m.has(key) and not _is_count(m[key]):
 				return false
 		ids[m.id] = true
 	for id in value.get("hiddenMineIds", []):
